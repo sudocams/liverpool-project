@@ -1,6 +1,6 @@
 import { useState } from 'react';
 
-export default function StudyConsent({ version, previouslyConsented = false, actionError = '', onParticipate, onPractice, onWithdraw }) {
+export default function StudyConsent({ version, retentionDays = 0, previouslyConsented = false, actionError = '', onParticipate, onPractice, onWithdraw }) {
   const [accepted, setAccepted] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -33,10 +33,11 @@ export default function StudyConsent({ version, previouslyConsented = false, act
         <div className="consent-details">
           <h2>If you choose to participate</h2>
           <ul>
-            <li>CyberWolf records challenge answers, scores, completion, pre/post assessment results, and your questionnaire ratings.</li>
-            <li>Your study events are linked to an internal random account key so progress can be provided and records deleted if you withdraw. Event records do not contain your handle or password.</li>
+            <li>CyberWolf records challenge answers and scores, completion, randomized pre/post assessment scores by topic, active time while the learning page is visible and focused, whether feedback was AI-generated or guided, and adaptive recommendations shown to you.</li>
+            <li>Authorized admins can review per-learner progress using your pseudonymous sign-in handle, including assessment improvement, challenge and module completion, activity time, AI-feedback usage, and recommendation history. Your study events are stored under an internal random account key; event records do not contain your handle or password.</li>
+            <li>{retentionDays > 0 ? `Study activity older than ${retentionDays} days is scheduled for automatic deletion. You can withdraw sooner to delete your saved study records.` : 'No automatic time-based deletion is configured in this prototype. You can withdraw at any time to delete your saved study records.'}</li>
             <li>If an external AI feedback provider is configured, the challenge context and selected answer may be sent to that provider. The final study information must name the provider and explain its data handling.</li>
-            <li>The research dashboard shows aggregate results only. Questionnaire items use ratings only; there is no free-text box.</li>
+            <li>The dashboard also provides group-level summaries. Questionnaire items use ratings only; there is no free-text box.</li>
             <li>You can withdraw at any time. Withdrawal deletes your saved study progress, assessment results, and feedback ratings from this prototype.</li>
           </ul>
           <h2>If you choose not to participate</h2>

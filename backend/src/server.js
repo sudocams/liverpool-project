@@ -1,10 +1,13 @@
 import 'dotenv/config';
+import { randomUUID } from 'node:crypto';
 import cors from 'cors';
 import express from 'express';
 import mongoose from 'mongoose';
 import { getAssessment, isAssessmentAnswerValid, scoreAssessment } from './content/assessments.js';
-import { getProgress, saveProgress, deleteProgress, listProgressForAccounts } from './services/progressStore.js';
+import { getProgress, saveProgress, deleteProgress, listProgressForAccounts, pruneExpiredProgress, startActivitySession, heartbeatActivitySession, endActivitySession } from './services/progressStore.js';
 import { recommendNextActivity } from './services/adaptiveEngine.js';
+import { learningPaths, pathChallengeIds, completedLearningPaths, learningPathProgress } from './content/learningPaths.js';
+import { updateGamification } from './services/gamification.js';
 import { generateChallengeFeedback } from './services/feedbackService.js';
 import { authenticateUser, clearResearchConsent, createUser, getUserById, hasAdminAccount, listResearchConsentedParticipants, setResearchConsent, validatePassword } from './services/authService.js';
 import { attachSession, clearSessionCookie, createSession, makeSessionCookie, requireAuth, requireRole, requireStudyConsent } from './services/sessionService.js';
@@ -13,11 +16,17 @@ import { createModule, deleteModule, getModule, listModules, seedModules, update
 const app = express();
 const port = Number(process.env.PORT) || 4000;
 const allowedOrigin = process.env.FRONTEND_ORIGIN || 'http://localhost:5173';
-const studyInfoVersion = process.env.STUDY_INFO_VERSION || 'draft-1';
+const studyInfoVersion = process.env.STUDY_INFO_VERSION || 'draft-3';
+const assessmentMaxAttempts = Math.max(1, Number.parseInt(process.env.ASSESSMENT_MAX_ATTEMPTS || '3', 10) || 3);
+const dataRetentionDays = Math.max(0, Number.parseInt(process.env.DATA_RETENTION_DAYS || '0', 10) || 0);
 
 function publicChallenge(challenge) {
   const { answerIndex, ...publicContent } = challenge;
   return publicContent;
+}
+
+function durationSeconds(value) {
+  return Number.isInteger(value) && value >= 0 ? Math.min(value, 7200) : 0;
 }
 
 app.use(cors({ origin: allowedOrigin, credentials: true }));
@@ -53,7 +62,7 @@ app.post('/api/auth/logout', (_req, res) => {
   return res.status(204).end();
 });
 
-app.get('/api/auth/me', requireAuth, (req, res) => res.json({ handle: req.account.handle, role: req.account.role, researchConsent: req.account.researchConsent ?? { version: null, acceptedAt: null }, studyInfoVersion }));
+app.get('/api/auth/me', requireAuth, (req, res) => res.json({ handle: req.account.handle, role: req.account.role, researchConsent: req.account.researchConsent ?? { version: null, acceptedAt: null }, studyInfoVersion, dataRetentionDays }));
 
 app.post('/api/research/consent', requireAuth, async (req, res, next) => {
   try {
@@ -100,6 +109,19 @@ app.get('/api/challenges/:challengeId', async (req, res, next) => {
   } catch (error) { return next(error); }
 });
 
+app.get('/api/learning-paths', async (_req, res, next) => {
+  try {
+    const modules = await listModules();
+    return res.json(learningPaths.map(path => {
+      const pathModules = path.modules.map(module => ({
+        ...module,
+        challenges: module.challengeIds.map(id => modules.find(item => item.id === id)).filter(Boolean).map(item => ({ id: item.id, title: item.title, topic: item.topic })),
+      }));
+      return { ...path, modules: pathModules, challengeIds: pathChallengeIds(path), challenges: pathModules.flatMap(module => module.challenges) };
+    }));
+  } catch (error) { return next(error); }
+});
+
 app.get('/api/progress', requireAuth, requireStudyConsent, async (req, res, next) => {
   try {
     return res.json(await getProgress(req.account.accountId));
@@ -109,6 +131,7 @@ app.get('/api/progress', requireAuth, requireStudyConsent, async (req, res, next
 app.get('/api/recommendations', requireAuth, requireStudyConsent, async (req, res, next) => {
   try {
     const [progress, modules] = await Promise.all([getProgress(req.account.accountId), listModules()]);
+    progress.completedPaths = completedLearningPaths(progress.completed);
     return res.json(recommendNextActivity(progress, modules));
   } catch (error) { return next(error); }
 });
@@ -116,25 +139,60 @@ app.get('/api/recommendations', requireAuth, requireStudyConsent, async (req, re
 app.get('/api/assessments/:phase', (req, res) => {
   const questions = getAssessment(req.params.phase);
   if (!questions) return res.status(404).json({ error: 'Assessment phase must be pre or post.' });
-  return res.json({ phase: req.params.phase, questions });
+  return res.json({ phase: req.params.phase, questions, maxAttempts: assessmentMaxAttempts });
 });
 
 app.post('/api/assessments', requireAuth, requireStudyConsent, async (req, res, next) => {
   try {
     const { phase, answers } = req.body ?? {};
-    if (!isAssessmentAnswerValid(phase, answers)) return res.status(400).json({ error: 'Submit one valid answer for every assessment question.' });
+    if (!isAssessmentAnswerValid(phase, answers)) return res.status(400).json({ error: 'Submit one valid answer for each assessment topic.' });
     const result = scoreAssessment(phase, answers);
     const current = await getProgress(req.account.accountId);
+    const consentedAt = req.account.researchConsent?.acceptedAt ? new Date(req.account.researchConsent.acceptedAt).getTime() : 0;
+    const phaseAttempts = (current.assessments ?? []).filter(item => item.phase === phase && (req.account.role === 'admin' || new Date(item.at).getTime() >= consentedAt)).length;
+    if (phaseAttempts >= assessmentMaxAttempts) return res.status(409).json({ error: `You have reached the ${assessmentMaxAttempts}-attempt limit for the ${phase}-assessment.` });
     const record = {
       phase,
       score: result.score,
       total: result.total,
+      durationSeconds: durationSeconds(req.body?.durationSeconds),
       answers: result.results.map(({ questionId, topic, correct }) => ({ questionId, topic, correct })),
       at: new Date().toISOString(),
     };
     const progress = { ...current, assessments: [...(current.assessments ?? []), record] };
     await saveProgress(req.account.accountId, progress);
     return res.status(201).json({ ...result, phase, at: record.at, progress });
+  } catch (error) { return next(error); }
+});
+
+app.post('/api/activity/sessions/start', requireAuth, requireStudyConsent, async (req, res, next) => {
+  try {
+    const now = new Date();
+    const activity = { sessionId: randomUUID(), startedAt: now, lastHeartbeatAt: now, endedAt: null, activeSeconds: 0 };
+    await startActivitySession(req.account.accountId, activity);
+    return res.status(201).json({ sessionId: activity.sessionId, startedAt: activity.startedAt });
+  } catch (error) { return next(error); }
+});
+
+app.post('/api/activity/sessions/heartbeat', requireAuth, requireStudyConsent, async (req, res, next) => {
+  try {
+    const sessionId = req.body?.sessionId;
+    if (typeof sessionId !== 'string') return res.status(400).json({ error: 'A sessionId is required.' });
+    const result = await heartbeatActivitySession(req.account.accountId, sessionId, new Date());
+    if (result.status === 'missing') return res.status(404).json({ error: 'Activity session not found.' });
+    if (result.status === 'ended') return res.status(409).json({ error: 'Activity session has ended.' });
+    if (result.status === 'stale') return res.status(409).json({ error: 'A newer activity heartbeat was already recorded.' });
+    return res.json({ activeSeconds: result.activeSeconds });
+  } catch (error) { return next(error); }
+});
+
+app.post('/api/activity/sessions/end', requireAuth, requireStudyConsent, async (req, res, next) => {
+  try {
+    const sessionId = req.body?.sessionId;
+    if (typeof sessionId !== 'string') return res.status(400).json({ error: 'A sessionId is required.' });
+    const result = await endActivitySession(req.account.accountId, sessionId, new Date());
+    if (result === 'missing') return res.status(404).json({ error: 'Activity session not found.' });
+    return res.status(204).end();
   } catch (error) { return next(error); }
 });
 
@@ -161,13 +219,18 @@ app.get('/api/research/summary', requireRole('admin'), async (_req, res, next) =
     const storedProgress = await listProgressForAccounts(participantIds);
     const progressByAccount = new Map(storedProgress.map(record => [record.learnerId, record]));
     const learners = participants.map(participant => {
-      const record = progressByAccount.get(participant.id) ?? { attempts: [], assessments: [], researchFeedback: null };
+      const record = progressByAccount.get(participant.id) ?? { attempts: [], assessments: [], progression: [], activitySessions: [], achievements: [], rankHistory: [], researchFeedback: null };
       const startsAt = participantDates.get(participant.id);
       const afterConsent = item => new Date(item.at).getTime() >= startsAt;
       const attempts = (record.attempts ?? []).filter(afterConsent);
       return {
         attempts,
         assessments: (record.assessments ?? []).filter(afterConsent),
+        progression: (record.progression ?? []).filter(afterConsent),
+        activitySessions: (record.activitySessions ?? []).filter(session => new Date(session.startedAt).getTime() >= startsAt),
+        achievements: (record.achievements ?? []).filter(item => new Date(item.earnedAt).getTime() >= startsAt),
+        rankHistory: (record.rankHistory ?? []).filter(item => new Date(item.reachedAt).getTime() >= startsAt),
+        currentRank: record.currentRank ?? 'Rookie',
         completed: [...new Set(attempts.filter(item => item.correct).map(item => item.challengeId))],
         researchFeedback: record.researchFeedback && afterConsent(record.researchFeedback) ? record.researchFeedback : null,
       };
@@ -182,7 +245,127 @@ app.get('/api/research/summary', requireRole('admin'), async (_req, res, next) =
     const matched = pairs.filter(pair => pair.pre && pair.post);
     const mean = values => values.length ? Math.round(values.reduce((sum, value) => sum + value, 0) / values.length * 10) / 10 : null;
     const reportable = participants.length >= 5;
+    const learnersWithTimedActivity = learners.filter(learner => (learner.activitySessions ?? []).length || learner.attempts.some(attempt => Number.isInteger(attempt.durationSeconds)) || learner.assessments.some(assessment => Number.isInteger(assessment.durationSeconds)));
     const toPercent = item => item ? item.score / item.total * 100 : null;
+    const challengeCatalog = await listModules();
+    const learningModuleCatalog = learningPaths.flatMap(path => path.modules.map(module => ({ ...module, pathId: path.id, pathTitle: path.title })));
+    const learnerAnalytics = learners.map((learner, index) => {
+      const participant = participants[index];
+      const latestByPhase = {};
+      for (const assessment of learner.assessments) {
+        if (!latestByPhase[assessment.phase] || new Date(assessment.at) > new Date(latestByPhase[assessment.phase].at)) latestByPhase[assessment.phase] = assessment;
+      }
+      const completedIds = new Set(challengeCatalog.map(module => module.id).filter(id => learner.completed.includes(id)));
+      const rank = [{ name: 'Rookie', threshold: 0 }, { name: 'Scout', threshold: 1 }, { name: 'Analyst', threshold: 5 }, { name: 'Specialist', threshold: 10 }, { name: 'Sentinel', threshold: 15 }, { name: 'Pathfinder', threshold: 20 }]
+        .filter(item => completedIds.size >= item.threshold).at(-1)?.name ?? 'Rookie';
+      const totalAttempts = learner.attempts.length;
+      const correctAttempts = learner.attempts.filter(attempt => attempt.correct).length;
+      const estimatedSubmissionSeconds = learner.attempts.reduce((sum, attempt) => sum + (attempt.durationSeconds ?? 0), 0)
+        + learner.assessments.reduce((sum, assessment) => sum + (assessment.durationSeconds ?? 0), 0);
+      const sessionSeconds = (learner.activitySessions ?? []).reduce((sum, session) => sum + (session.activeSeconds ?? 0), 0);
+      const secondsLearning = learner.activitySessions?.length ? sessionSeconds : estimatedSubmissionSeconds;
+      const aiFeedbackCount = learner.attempts.filter(attempt => attempt.feedbackSource === 'ai').length;
+      const guidedFeedbackCount = learner.attempts.filter(attempt => attempt.feedbackSource === 'guided').length;
+      const feedbackTrackedCount = aiFeedbackCount + guidedFeedbackCount;
+      const durationTrackedCount = learner.activitySessions?.length || (learner.attempts.filter(attempt => Number.isInteger(attempt.durationSeconds)).length
+        + learner.assessments.filter(assessment => Number.isInteger(assessment.durationSeconds)).length);
+      const progressionCounts = learner.progression.reduce((counts, event) => ({ ...counts, [event.rule]: (counts[event.rule] ?? 0) + 1 }), {});
+      const percentCompleted = challengeCatalog.length ? Math.round(completedIds.size / challengeCatalog.length * 100) : 0;
+      const topicAssessmentProgress = [...new Set([...(latestByPhase.pre?.answers ?? []), ...(latestByPhase.post?.answers ?? [])].map(answer => answer.topic))].map(topic => {
+        const preAnswer = latestByPhase.pre?.answers?.find(answer => answer.topic === topic);
+        const postAnswer = latestByPhase.post?.answers?.find(answer => answer.topic === topic);
+        return { topic, preCorrect: preAnswer?.correct ?? null, postCorrect: postAnswer?.correct ?? null, improvementPoints: preAnswer && postAnswer ? (Number(postAnswer.correct) - Number(preAnswer.correct)) * 100 : null };
+      });
+      const weekKey = value => {
+        const date = new Date(value);
+        date.setUTCHours(0, 0, 0, 0);
+        date.setUTCDate(date.getUTCDate() - ((date.getUTCDay() + 6) % 7));
+        return date.toISOString().slice(0, 10);
+      };
+      const trendMap = new Map();
+      const trendFor = key => {
+        if (!trendMap.has(key)) trendMap.set(key, { weekStarting: key, attempts: 0, correct: 0, completions: 0, assessmentScores: [], activeSeconds: 0 });
+        return trendMap.get(key);
+      };
+      const seenClears = new Set();
+      for (const attempt of learner.attempts) {
+        const point = trendFor(weekKey(attempt.at));
+        point.attempts += 1; point.correct += Number(attempt.correct);
+        if (attempt.correct && !seenClears.has(attempt.challengeId)) { point.completions += 1; seenClears.add(attempt.challengeId); }
+      }
+      for (const assessment of learner.assessments) trendFor(weekKey(assessment.at)).assessmentScores.push(assessment.score / assessment.total * 100);
+      for (const session of learner.activitySessions ?? []) trendFor(weekKey(session.startedAt)).activeSeconds += session.activeSeconds ?? 0;
+      const learningTrend = [...trendMap.values()].sort((a, b) => a.weekStarting.localeCompare(b.weekStarting)).map(point => ({
+        weekStarting: point.weekStarting, attempts: point.attempts, accuracy: point.attempts ? Math.round(point.correct / point.attempts * 100) : null,
+        challengeClears: point.completions, assessmentPercent: point.assessmentScores.length ? mean(point.assessmentScores) : null, activeSeconds: point.activeSeconds,
+      }));
+      const pathProgress = learningPaths.map(path => ({ id: path.id, title: path.title, ...learningPathProgress(path, [...completedIds]) }));
+      return {
+        handle: participant.handle,
+        consentedAt: participant.acceptedAt,
+        assessments: {
+          pre: latestByPhase.pre ? { score: latestByPhase.pre.score, total: latestByPhase.pre.total, percent: Math.round(toPercent(latestByPhase.pre)), at: latestByPhase.pre.at } : null,
+          post: latestByPhase.post ? { score: latestByPhase.post.score, total: latestByPhase.post.total, percent: Math.round(toPercent(latestByPhase.post)), at: latestByPhase.post.at } : null,
+          improvementPoints: latestByPhase.pre && latestByPhase.post ? Math.round((toPercent(latestByPhase.post) - toPercent(latestByPhase.pre)) * 10) / 10 : null,
+          topicProgress: topicAssessmentProgress,
+        },
+        challengeCompletion: { completed: completedIds.size, total: challengeCatalog.length, rate: percentCompleted },
+        moduleCompletion: {
+          completed: learningModuleCatalog.filter(module => module.challengeIds.every(id => completedIds.has(id))).length,
+          total: learningModuleCatalog.length,
+          rate: learningModuleCatalog.length ? Math.round(learningModuleCatalog.filter(module => module.challengeIds.every(id => completedIds.has(id))).length / learningModuleCatalog.length * 100) : 0,
+        },
+        activity: { attempts: totalAttempts, accuracy: totalAttempts ? Math.round(correctAttempts / totalAttempts * 100) : null, timeSpentSeconds: secondsLearning, timeTrackedActivities: durationTrackedCount, activeSessions: learner.activitySessions?.length ?? 0 },
+        aiFeedback: { used: aiFeedbackCount, guided: guidedFeedbackCount, untracked: totalAttempts - feedbackTrackedCount, trackedAttempts: feedbackTrackedCount, usageRate: feedbackTrackedCount ? Math.round(aiFeedbackCount / feedbackTrackedCount * 100) : null },
+        adaptiveProgression: { decisions: learner.progression.length, rules: progressionCounts, history: learner.progression },
+        learningPaths: pathProgress,
+        learningTrend,
+        achievements: learner.achievements ?? [],
+        rank,
+        rankHistory: learner.rankHistory,
+        modules: learningModuleCatalog.map(module => {
+          const moduleAttempts = learner.attempts.filter(attempt => module.challengeIds.includes(attempt.challengeId));
+          const wins = moduleAttempts.filter(attempt => attempt.correct).length;
+          const moduleChallenges = module.challengeIds.map(id => challengeCatalog.find(challenge => challenge.id === id)).filter(Boolean);
+          return {
+            id: module.id, title: module.title, pathTitle: module.pathTitle, completed: moduleChallenges.length > 0 && moduleChallenges.every(challenge => completedIds.has(challenge.id)),
+            challengeCount: moduleChallenges.length, attempts: moduleAttempts.length, accuracy: moduleAttempts.length ? Math.round(wins / moduleAttempts.length * 100) : null,
+            timeSpentSeconds: moduleAttempts.reduce((sum, attempt) => sum + (attempt.durationSeconds ?? 0), 0),
+            timeTrackedAttempts: moduleAttempts.filter(attempt => Number.isInteger(attempt.durationSeconds)).length,
+            challenges: moduleChallenges.map(challenge => {
+              const attempts = moduleAttempts.filter(attempt => attempt.challengeId === challenge.id);
+              const correct = attempts.filter(attempt => attempt.correct).length;
+              return { id: challenge.id, title: challenge.title, completed: completedIds.has(challenge.id), attempts: attempts.length, accuracy: attempts.length ? Math.round(correct / attempts.length * 100) : null };
+            }),
+          };
+        }),
+        challenges: challengeCatalog.map(challenge => {
+          const attempts = learner.attempts.filter(attempt => attempt.challengeId === challenge.id);
+          const correct = attempts.filter(attempt => attempt.correct).length;
+          return { id: challenge.id, title: challenge.title, completed: completedIds.has(challenge.id), attempts: attempts.length, accuracy: attempts.length ? Math.round(correct / attempts.length * 100) : null };
+        }),
+      };
+    });
+    const strategyStats = new Map();
+    for (const learner of learners) {
+      for (const event of learner.progression ?? []) {
+        const attempts = learner.attempts ?? [];
+        const eventIndex = attempts.findIndex(attempt => new Date(attempt.at).getTime() === new Date(event.at).getTime());
+        const immediateFollowup = eventIndex >= 0 ? attempts[eventIndex + 1] : null;
+        const followup = immediateFollowup?.challengeId === event.recommendedChallengeId
+          ? immediateFollowup
+          : null;
+        const stats = strategyStats.get(event.rule) ?? { rule: event.rule, decisions: 0, followups: 0, correctFollowups: 0 };
+        stats.decisions += 1;
+        if (followup) { stats.followups += 1; stats.correctFollowups += Number(followup.correct); }
+        strategyStats.set(event.rule, stats);
+      }
+    }
+    const topicGains = [...new Set(learnerAnalytics.flatMap(learner => learner.assessments.topicProgress.map(item => item.topic)))].map(topic => {
+      const values = learnerAnalytics.map(learner => learner.assessments.topicProgress.find(item => item.topic === topic)?.improvementPoints).filter(Number.isFinite);
+      const hasReportableSample = reportable && values.length >= 5;
+      return { topic, matchedLearners: hasReportableSample ? values.length : null, meanImprovementPoints: hasReportableSample ? mean(values) : null };
+    });
     return res.json({
       learnersWithPre: reportable ? pairs.filter(pair => pair.pre).length : null,
       learnersWithPost: reportable ? pairs.filter(pair => pair.post).length : null,
@@ -190,12 +373,21 @@ app.get('/api/research/summary', requireRole('admin'), async (_req, res, next) =
       meanPrePercent: reportable ? mean(matched.map(pair => toPercent(pair.pre))) : null,
       meanPostPercent: reportable ? mean(matched.map(pair => toPercent(pair.post))) : null,
       meanChangePoints: reportable ? mean(matched.map(pair => toPercent(pair.post) - toPercent(pair.pre))) : null,
-      meanModulesCompleted: reportable ? mean(pairs.map(pair => pair.completed)) : null,
+      meanModulesCompleted: reportable ? mean(learnerAnalytics.map(learner => learner.moduleCompletion.completed)) : null,
+      meanModuleCompletionRate: reportable ? mean(learnerAnalytics.map(learner => learner.moduleCompletion.rate)) : null,
+      meanChallengeCompletionRate: reportable ? mean(learnerAnalytics.map(learner => learner.challengeCompletion.rate)) : null,
+      meanActiveLearningMinutes: reportable && learnersWithTimedActivity.length >= 5 ? mean(learnerAnalytics.filter(learner => learner.activity.timeTrackedActivities > 0).map(learner => learner.activity.timeSpentSeconds / 60)) : null,
+      learnersWithTimedActivity: reportable ? learnersWithTimedActivity.length : null,
       feedbackResponseCount: reportable ? learners.filter(learner => learner.researchFeedback).length : null,
       feedbackMeanRatings: Object.fromEntries(['usability', 'engagement', 'learningValue', 'adaptationRelevance', 'feedbackClarity'].map(field => {
         const values = learners.map(learner => learner.researchFeedback?.[field]).filter(Number.isInteger);
         return [field, reportable && values.length >= 5 ? mean(values) : null];
       })),
+      learners: learnerAnalytics,
+      recommendationStrategyComparison: reportable ? [...strategyStats.values()].map(item => ({ ...item, followupSuccessRate: item.followups ? Math.round(item.correctFollowups / item.followups * 100) : null })) : null,
+      topicLearningGains: topicGains,
+      moduleCount: learningModuleCatalog.length,
+      challengeCount: challengeCatalog.length,
       note: 'Only opted-in learner records are included. Aggregate means are hidden until at least five participants have consented; feedback means also require five responses. Consent text remains a draft until approved for the study.',
     });
   } catch (error) { return next(error); }
@@ -207,6 +399,17 @@ app.delete('/api/progress', requireAuth, requireStudyConsent, async (req, res, n
     return res.status(204).end();
   } catch (error) { return next(error); }
 });
+
+app.post('/api/admin/retention/prune', requireRole('admin'), async (_req, res, next) => {
+  if (!dataRetentionDays) return res.status(409).json({ error: 'Data retention is disabled. Configure DATA_RETENTION_DAYS first.' });
+  try {
+    const cutoff = new Date(Date.now() - dataRetentionDays * 24 * 60 * 60 * 1000);
+    const recordsProcessed = await pruneExpiredProgress(cutoff);
+    return res.json({ recordsProcessed, cutoff, retentionDays: dataRetentionDays });
+  } catch (error) { return next(error); }
+});
+
+app.get('/api/admin/retention', requireRole('admin'), (_req, res) => res.json({ enabled: dataRetentionDays > 0, retentionDays: dataRetentionDays }));
 
 app.post('/api/attempts', requireAuth, requireStudyConsent, async (req, res, next) => {
   try {
@@ -220,22 +423,32 @@ app.post('/api/attempts', requireAuth, requireStudyConsent, async (req, res, nex
     if (hintsUsed > (challenge.hints?.length ?? 0)) return res.status(400).json({ error: 'hintsUsed is out of range.' });
 
     const current = await getProgress(req.account.accountId);
+    const owningPath = learningPaths.find(path => path.modules.some(module => module.challengeIds.includes(challengeId)));
+    const completedPathIds = new Set(completedLearningPaths(current.completed));
+    if (owningPath && owningPath.prerequisites.some(id => !completedPathIds.has(id))) return res.status(409).json({ error: 'Complete the prerequisite learning path before starting this challenge.' });
+    const owningModuleIndex = owningPath?.modules.findIndex(module => module.challengeIds.includes(challengeId)) ?? -1;
+    if (owningModuleIndex > 0 && owningPath.modules.slice(0, owningModuleIndex).some(module => !module.challengeIds.every(id => current.completed.includes(id)))) return res.status(409).json({ error: 'Complete the earlier modules in this learning path before starting this challenge.' });
     const correct = selectedOption === challenge.answerIndex;
     const firstClear = correct && !current.completed.includes(challengeId);
     const points = correct
       ? firstClear ? Math.max(40, 100 - hintsUsed * 20) : Math.max(10, 25 - hintsUsed * 5)
       : 5;
-    const attempt = { challengeId, topic: challenge.topic, correct, points, hintsUsed, at: new Date().toISOString() };
-    const progress = {
+    const duration = durationSeconds(req.body?.durationSeconds);
+    const modules = await listModules();
+    const feedback = await generateChallengeFeedback({ challenge, selectedOption, correct });
+    const attempt = { challengeId, topic: challenge.topic, correct, points, hintsUsed, durationSeconds: duration, feedbackSource: feedback.source, at: new Date().toISOString() };
+    const previousCompletedCount = current.completed.length;
+    let progress = {
+      ...current,
       attempts: [...current.attempts, attempt],
       completed: correct && !current.completed.includes(challengeId) ? [...current.completed, challengeId] : current.completed,
-      assessments: current.assessments ?? [],
-      researchFeedback: current.researchFeedback ?? null,
     };
+    progress.completedPaths = completedLearningPaths(progress.completed);
+    const recommendation = recommendNextActivity(progress, modules, learningPaths);
+    progress.progression = [...progress.progression, { rule: recommendation.rule, reason: recommendation.reason, recommendedChallengeId: recommendation.challengeId, at: attempt.at }];
+    progress = updateGamification(progress, modules, new Date(attempt.at), previousCompletedCount);
     await saveProgress(req.account.accountId, progress);
-    const feedback = await generateChallengeFeedback({ challenge, selectedOption, correct });
-    const modules = await listModules();
-    return res.status(201).json({ attempt, feedback, progress, recommendation: recommendNextActivity(progress, modules) });
+    return res.status(201).json({ attempt, feedback, progress, recommendation });
   } catch (error) { return next(error); }
 });
 
@@ -255,7 +468,7 @@ app.post('/api/practice/answer', requireAuth, async (req, res, next) => {
 });
 
 app.get('/api/admin/modules', requireRole('admin'), async (_req, res, next) => {
-  try { return res.json(await listModules()); }
+  try { return res.json((await listModules()).map(module => ({ ...module, pathProtected: learningPaths.some(path => path.modules.some(group => group.challengeIds.includes(module.id))) }))); }
   catch (error) { return next(error); }
 });
 
@@ -283,6 +496,7 @@ app.put('/api/admin/modules/:moduleId', requireRole('admin'), async (req, res, n
 
 app.delete('/api/admin/modules/:moduleId', requireRole('admin'), async (req, res, next) => {
   try {
+    if (learningPaths.some(path => path.modules.some(module => module.challengeIds.includes(req.params.moduleId)))) return res.status(409).json({ error: 'This challenge is part of a guided learning path and cannot be deleted. You can edit its content instead.' });
     if ((await listModules()).length <= 1) return res.status(409).json({ error: 'At least one learning module must remain.' });
     const removed = await deleteModule(req.params.moduleId);
     if (!removed) return res.status(404).json({ error: 'Module not found.' });
@@ -295,10 +509,19 @@ app.use((error, _req, res, _next) => {
   res.status(500).json({ error: 'Something went wrong while processing the request.' });
 });
 
+function scheduleDataRetention() {
+  if (!dataRetentionDays) return;
+  const prune = () => pruneExpiredProgress(new Date(Date.now() - dataRetentionDays * 24 * 60 * 60 * 1000))
+    .then(records => console.log(`Data-retention cleanup processed ${records} learner records.`))
+    .catch(error => console.error('Data-retention cleanup failed:', error.message));
+  prune();
+  setInterval(prune, 24 * 60 * 60 * 1000).unref();
+}
+
 if (process.env.MONGODB_URI) {
   mongoose.connect(process.env.MONGODB_URI)
-    .then(() => seedModules().then(() => console.log('Connected to MongoDB and loaded learning modules.')))
-    .catch(error => console.error('MongoDB connection failed; using temporary in-memory progress.', error.message));
-}
+    .then(() => seedModules().then(() => { console.log('Connected to MongoDB and loaded learning modules.'); scheduleDataRetention(); }))
+    .catch(error => { console.error('MongoDB connection failed; using temporary in-memory progress.', error.message); scheduleDataRetention(); });
+} else scheduleDataRetention();
 
 app.listen(port, () => console.log(`CyberWolf API listening on http://localhost:${port}`));

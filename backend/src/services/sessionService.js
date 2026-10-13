@@ -1,8 +1,8 @@
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { getUserById } from './authService.js';
 
-if (process.env.NODE_ENV === 'production' && (!process.env.SESSION_SECRET || process.env.SESSION_SECRET.length < 32)) {
-  throw new Error('Set SESSION_SECRET to a private value of at least 32 characters in production.');
+if (process.env.NODE_ENV === 'production' && (!process.env.SESSION_SECRET || process.env.SESSION_SECRET.length < 32 || process.env.SESSION_SECRET === 'replace-with-a-random-secret-of-at-least-32-characters')) {
+  throw new Error('Set SESSION_SECRET to a unique private value of at least 32 characters in production.');
 }
 const secret = process.env.SESSION_SECRET || randomBytes(32).toString('hex');
 const cookieName = 'cyberwolf_session';
@@ -70,7 +70,7 @@ export function requireRole(role) {
 }
 
 export function requireStudyConsent(req, res, next) {
-  const currentVersion = process.env.STUDY_INFO_VERSION || 'draft-1';
+  const currentVersion = process.env.STUDY_INFO_VERSION || 'draft-3';
   if (req.account?.role === 'admin' || (req.account?.researchConsent?.acceptedAt && req.account.researchConsent.version === currentVersion)) return next();
   return res.status(403).json({ error: 'Research participation is not enabled for this account. Choose to participate or continue in practice-only mode.' });
 }

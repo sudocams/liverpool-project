@@ -5,6 +5,7 @@ const learningModuleSchema = new mongoose.Schema({
   missionOrder: { type: Number, default: 9999, index: true },
   topic: { type: String, required: true },
   duration: { type: String, required: true },
+  difficulty: { type: String, enum: ['foundational', 'intermediate', 'advanced'], default: 'intermediate' },
   title: { type: String, required: true },
   description: { type: String, required: true },
   learningObjective: { type: String, required: true },

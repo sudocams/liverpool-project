@@ -12,7 +12,7 @@ npm install
 npm run dev
 ```
 
-The frontend presents 20 manually authored cybersecurity mission scenarios spanning phishing, identity, endpoint, network, cloud, web, privacy, incident response, governance, mobile, and AI security. Gamification includes XP, hint-aware first-clear rewards, six learner ranks, a mission board, and skill badges, alongside adaptive recommendations and learning feedback. The project also includes pre/post knowledge checks. Accounts are password-only: the server issues a random sign-in handle, with no name, email, phone number, or personal ID requested. Learner progress is scoped to the signed-in account. Research participation is optional, with practice-only mode, explicit consent, withdrawal and deletion, an optional structured experience questionnaire, and aggregate admin reporting.
+The frontend presents 20 manually authored cybersecurity scenarios and three guided learning paths. Gamification includes XP, saved ranks and achievements, path progress, adaptive recommendations, and learning feedback. Randomized pre/post checks sample one question per topic and support limited retakes. The admin dashboard includes per-learner and group analytics for assessment gains, completion, active time, AI feedback usage, and adaptive progression. Accounts are password-only: the server issues a random sign-in handle, with no name, email, phone number, or personal ID requested. Learner progress is scoped to the signed-in account. Research participation is optional, with practice-only mode, explicit consent, withdrawal and deletion, an optional structured experience questionnaire, configurable retention, and backup/deployment configuration.
 
 ## Backend
 
@@ -26,4 +26,4 @@ npm install
 npm run dev
 ```
 
-Run the frontend in a second terminal using the steps above. The backend uses MongoDB when configured, or temporary in-memory progress for local development.
+Run the frontend in a second terminal using the steps above. The backend uses MongoDB when configured, or temporary in-memory progress for local development. Backend unit tests are available with `cd backend && npm test`. See `backend/README.md` for retention, backup, and Docker deployment instructions.

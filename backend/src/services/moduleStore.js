@@ -16,6 +16,7 @@ export function validateModule(module) {
   }
   if (!Array.isArray(module.options) || module.options.length < 2 || module.options.length > 6 || module.options.some(item => typeof item !== 'string' || !item.trim() || item.length > 500)) return 'options must contain 2–6 answer strings.';
   if (!Number.isInteger(module.answerIndex) || module.answerIndex < 0 || module.answerIndex >= module.options.length) return 'answerIndex must refer to one of the answer options.';
+  if (module.difficulty !== undefined && !['foundational', 'intermediate', 'advanced'].includes(module.difficulty)) return 'difficulty must be foundational, intermediate, or advanced.';
   return null;
 }
 
@@ -42,6 +43,7 @@ export async function getModule(id) {
 }
 
 export async function createModule(module) {
+  module = { difficulty: 'intermediate', ...module };
   if (mongoose.connection.readyState === 1) return plainModule(await LearningModule.create(module));
   if (temporaryModules.has(module.id)) throw new Error('A module with this id already exists.');
   temporaryModules.set(module.id, structuredClone(module));
@@ -49,6 +51,7 @@ export async function createModule(module) {
 }
 
 export async function updateModule(id, module) {
+  module = { difficulty: 'intermediate', ...module };
   if (mongoose.connection.readyState === 1) return LearningModule.findOneAndUpdate({ id }, { $set: module }, { new: true, runValidators: true }).lean();
   if (!temporaryModules.has(id)) return null;
   const updated = { ...module, id };
@@ -66,11 +69,19 @@ export async function deleteModule(id) {
 export async function seedModules() {
   if (mongoose.connection.readyState !== 1) return;
   const migrationKey = 'cyberwolf-missions-v1';
-  if (await ContentMigration.exists({ key: migrationKey })) return;
-  const operations = challenges.flatMap((module, index) => [
-    { updateOne: { filter: { id: module.id }, update: { $setOnInsert: { ...module, missionOrder: index + 1 } }, upsert: true } },
-    { updateOne: { filter: { id: module.id, missionOrder: { $exists: false } }, update: { $set: { missionOrder: index + 1 } } } },
-  ]);
-  await LearningModule.bulkWrite(operations);
-  await ContentMigration.updateOne({ key: migrationKey }, { $setOnInsert: { key: migrationKey } }, { upsert: true });
+  if (!(await ContentMigration.exists({ key: migrationKey }))) {
+    const operations = challenges.flatMap((module, index) => [
+      { updateOne: { filter: { id: module.id }, update: { $setOnInsert: { ...module, missionOrder: index + 1 } }, upsert: true } },
+      { updateOne: { filter: { id: module.id, missionOrder: { $exists: false } }, update: { $set: { missionOrder: index + 1 } } } },
+    ]);
+    await LearningModule.bulkWrite(operations);
+    await ContentMigration.updateOne({ key: migrationKey }, { $setOnInsert: { key: migrationKey } }, { upsert: true });
+  }
+  const difficultyMigrationKey = 'cyberwolf-difficulty-v1';
+  if (!(await ContentMigration.exists({ key: difficultyMigrationKey }))) {
+    await LearningModule.bulkWrite(challenges.map(module => ({
+      updateOne: { filter: { id: module.id, difficulty: { $exists: false } }, update: { $set: { difficulty: module.difficulty } } },
+    })));
+    await ContentMigration.updateOne({ key: difficultyMigrationKey }, { $setOnInsert: { key: difficultyMigrationKey } }, { upsert: true });
+  }
 }

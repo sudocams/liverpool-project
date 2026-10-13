@@ -84,8 +84,8 @@ export async function clearResearchConsent(accountId) {
 
 export async function listResearchConsentedParticipants() {
   if (User.db.readyState === 1) {
-    const users = await User.find({ role: 'learner', 'researchConsent.acceptedAt': { $ne: null } }, { _id: 1, 'researchConsent.acceptedAt': 1 }).lean();
-    return users.map(user => ({ id: user._id.toString(), acceptedAt: user.researchConsent.acceptedAt }));
+    const users = await User.find({ role: 'learner', 'researchConsent.acceptedAt': { $ne: null } }, { _id: 1, handle: 1, 'researchConsent.acceptedAt': 1 }).lean();
+    return users.map(user => ({ id: user._id.toString(), handle: user.handle, acceptedAt: user.researchConsent.acceptedAt }));
   }
-  return [...temporaryUsers.values()].filter(user => user.role === 'learner' && user.researchConsent?.acceptedAt).map(user => ({ id: user.id, acceptedAt: user.researchConsent.acceptedAt }));
+  return [...temporaryUsers.values()].filter(user => user.role === 'learner' && user.researchConsent?.acceptedAt).map(user => ({ id: user.id, handle: user.handle, acceptedAt: user.researchConsent.acceptedAt }));
 }

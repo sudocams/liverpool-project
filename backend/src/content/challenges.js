@@ -1,6 +1,6 @@
 export const challenges = [
   {
-    id: 'phishing', topic: 'Phishing', duration: '3 min', title: 'The delivery you weren’t expecting',
+    id: 'phishing', topic: 'Phishing', duration: '3 min', difficulty: 'foundational', title: 'The delivery you weren’t expecting',
     description: 'A message lands in your inbox while you’re working. It looks routine at first glance, but something feels a little off.',
     learningObjective: 'Recognize common phishing signals and verify unexpected requests safely.',
     briefing: ['Urgency and unfamiliar senders are reasons to pause.', 'Check a request through an official app or website you open yourself.'],
@@ -12,7 +12,7 @@ export const challenges = [
     explanation: 'Going directly to the official app or website avoids trusting links in an unexpected message. Urgency, an unfamiliar sender, and a request to act are reasons to pause and verify.',
   },
   {
-    id: 'passwords', topic: 'Account security', duration: '3 min', title: 'One password, many doors',
+    id: 'passwords', topic: 'Account security', duration: '3 min', difficulty: 'foundational', title: 'One password, many doors',
     description: 'You’re setting up a new account for a service you use regularly. You want a password that’s both practical and safe.',
     learningObjective: 'Choose account protections that limit the impact of a stolen password.',
     briefing: ['Use a unique password for every important account.', 'Enable multi-factor authentication when it is available.'],
@@ -24,7 +24,7 @@ export const challenges = [
     explanation: 'A unique password limits the damage if another service is breached. MFA adds another check, so a stolen password alone is less likely to give someone access.',
   },
   {
-    id: 'social-engineering', topic: 'Social engineering', duration: '3 min', title: 'A call from “IT support”',
+    id: 'social-engineering', topic: 'Social engineering', duration: '3 min', difficulty: 'intermediate', title: 'A call from “IT support”',
     description: 'A caller says they’re from IT and need your help fixing an urgent issue with your account.',
     learningObjective: 'Respond safely to requests that use pressure or impersonate a trusted person.',
     briefing: ['Never share one-time codes or approve an unexpected sign-in.', 'Contact the organisation using a channel you find independently.'],
@@ -36,7 +36,7 @@ export const challenges = [
     explanation: 'One-time codes and sign-in approvals are meant for you. Don’t share them with a caller. End the call and contact support using a number or channel you find independently.',
   },
   {
-    id: 'safe-downloads', topic: 'Malware & downloads', duration: '4 min', title: 'An update from an unfamiliar site',
+    id: 'safe-downloads', topic: 'Malware & downloads', duration: '4 min', difficulty: 'foundational', title: 'An update from an unfamiliar site',
     description: 'A pop-up says your browser is out of date while you are downloading a free document reader.',
     learningObjective: 'Identify risky software prompts and verify updates at their source.',
     briefing: ['Unexpected update pop-ups can be used to distribute malicious software.', 'Update through the application itself or the developer’s official website.'],
@@ -48,7 +48,7 @@ export const challenges = [
     explanation: 'A website pop-up should not be trusted to supply a browser update. Close it, then use the browser’s built-in update function or navigate to the official developer site yourself.',
   },
   {
-    id: 'public-wifi', topic: 'Public Wi-Fi', duration: '4 min', title: 'The café network',
+    id: 'public-wifi', topic: 'Public Wi-Fi', duration: '4 min', difficulty: 'intermediate', title: 'The café network',
     description: 'You are at a café and need to check an important account while connected to public Wi-Fi.',
     learningObjective: 'Verify public networks and choose a safer connection for sensitive activity.',
     briefing: ['Confirm the correct network name with the venue; lookalike networks can be set up nearby.', 'For sensitive account activity, prefer mobile data or a trusted connection.'],
@@ -60,7 +60,7 @@ export const challenges = [
     explanation: 'A familiar-looking network name is not proof that it belongs to the café. Verify the official network with staff, and use mobile data for sensitive account activity when possible.',
   },
   {
-    id: 'network-traffic', topic: 'Network monitoring', duration: '5 min', title: 'The overnight traffic spike',
+    id: 'network-traffic', topic: 'Network monitoring', duration: '5 min', difficulty: 'intermediate', title: 'The overnight traffic spike',
     description: 'A monitoring dashboard shows one workstation sending far more data than usual after business hours.',
     learningObjective: 'Investigate unusual network activity using evidence and proportionate containment.',
     briefing: ['A traffic spike is a signal to investigate, not proof of an attack.', 'Preserve relevant logs and follow the organisation’s incident process.'],
@@ -72,7 +72,7 @@ export const challenges = [
     explanation: 'The spike deserves prompt investigation, but it may have a legitimate cause. Validate known activity, preserve evidence, and use a proportionate response with the security team.',
   },
   {
-    id: 'ransomware-response', topic: 'Ransomware response', duration: '5 min', title: 'Files suddenly won’t open',
+    id: 'ransomware-response', topic: 'Ransomware response', duration: '5 min', difficulty: 'advanced', title: 'Files suddenly won’t open',
     description: 'Several shared files become inaccessible and a workstation displays a ransom note.',
     learningObjective: 'Choose safe initial containment and escalation steps during a ransomware incident.',
     briefing: ['Report suspected ransomware immediately using the incident process.', 'Avoid actions that could destroy evidence or spread the infection.'],
@@ -84,7 +84,7 @@ export const challenges = [
     explanation: 'Promptly isolate the affected device as directed by the incident plan and notify security. Avoid payment, improvised recovery, or actions that could spread the incident or destroy evidence.',
   },
   {
-    id: 'cloud-storage', topic: 'Cloud security', duration: '4 min', title: 'A public folder by mistake',
+    id: 'cloud-storage', topic: 'Cloud security', duration: '4 min', difficulty: 'foundational', title: 'A public folder by mistake',
     description: 'A routine review finds that a cloud folder containing internal documents can be opened by anyone with its link.',
     learningObjective: 'Respond to an exposed cloud resource and apply least-privilege access.',
     briefing: ['Restrict access to approved people and services.', 'Preserve access records and report possible exposure under policy.'],
@@ -96,7 +96,7 @@ export const challenges = [
     explanation: 'Restricting public access limits continued exposure. Preserve available evidence and notify the responsible teams so they can assess scope and follow the organisation’s response process.',
   },
   {
-    id: 'web-access-control', topic: 'Web application security', duration: '5 min', title: 'A record that isn’t yours',
+    id: 'web-access-control', topic: 'Web application security', duration: '5 min', difficulty: 'advanced', title: 'A record that isn’t yours',
     description: 'During an authorised review, you notice that changing a record number in a test URL displays another test user’s profile.',
     learningObjective: 'Recognise missing server-side authorization and choose a responsible reporting path.',
     briefing: ['Authentication confirms who signed in; authorization controls what they may access.', 'Report findings through the approved security channel and avoid viewing extra data.'],
@@ -108,7 +108,7 @@ export const challenges = [
     explanation: 'The server must verify that the signed-in user is allowed to access each requested record. Stop at the minimum proof, report through the authorised channel, and assess impact safely.',
   },
   {
-    id: 'alert-triage', topic: 'Security operations', duration: '5 min', title: 'Three alerts, one analyst',
+    id: 'alert-triage', topic: 'Security operations', duration: '5 min', difficulty: 'intermediate', title: 'Three alerts, one analyst',
     description: 'A small security team receives several alerts at once and must decide what to investigate first.',
     learningObjective: 'Prioritise security alerts using severity, evidence, and potential impact.',
     briefing: ['Correlate related signals before drawing a conclusion.', 'Prioritise credible signs of active compromise and follow escalation procedures.'],
@@ -120,7 +120,7 @@ export const challenges = [
     explanation: 'The identity events form a concerning sequence affecting a privileged account. Triage it first, validate the evidence, and escalate according to the incident process.',
   },
   {
-    id: 'data-disclosure', topic: 'Privacy & data protection', duration: '4 min', title: 'The email went to the wrong person',
+    id: 'data-disclosure', topic: 'Privacy & data protection', duration: '4 min', difficulty: 'intermediate', title: 'The email went to the wrong person',
     description: 'A colleague realises that a spreadsheet with customer contact details was sent to an unintended recipient.',
     learningObjective: 'Respond promptly to a possible personal data disclosure using the correct reporting process.',
     briefing: ['Report a possible disclosure promptly; do not decide alone that it is harmless.', 'Follow privacy incident procedures and preserve relevant details.'],
@@ -132,7 +132,7 @@ export const challenges = [
     explanation: 'Prompt reporting lets the responsible team assess the data, recipients, and appropriate next steps. Preserve the facts and do not conceal or broaden the disclosure.',
   },
   {
-    id: 'insider-risk', topic: 'Insider risk', duration: '5 min', title: 'A large download before departure',
+    id: 'insider-risk', topic: 'Insider risk', duration: '5 min', difficulty: 'advanced', title: 'A large download before departure',
     description: 'A monitoring alert flags an unusually large file download by an employee who is leaving the organisation soon.',
     learningObjective: 'Assess unusual activity fairly and follow evidence-based insider-risk procedures.',
     briefing: ['An alert is not proof of malicious intent; check context and approved work.', 'Use authorised procedures and limit access to sensitive investigation details.'],
@@ -144,7 +144,7 @@ export const challenges = [
     explanation: 'Unusual activity needs a fair, evidence-based review. Preserve relevant records, validate legitimate work, and involve authorised teams without assuming intent or taking unapproved action.',
   },
   {
-    id: 'patch-priority', topic: 'Vulnerability management', duration: '5 min', title: 'Which fix comes first?',
+    id: 'patch-priority', topic: 'Vulnerability management', duration: '5 min', difficulty: 'intermediate', title: 'Which fix comes first?',
     description: 'A scan finds two serious weaknesses, but the team can safely address only one system today.',
     learningObjective: 'Prioritise vulnerability response based on exposure, exploitability, and business impact.',
     briefing: ['Severity scores are useful inputs, not the whole risk decision.', 'Consider exposure, active exploitation, asset importance, and safe change planning.'],
@@ -156,7 +156,7 @@ export const challenges = [
     explanation: 'The exposed server with active exploitation presents the more immediate risk. Reduce exposure promptly, use change controls, and verify the fix while preserving service safety.',
   },
   {
-    id: 'supplier-access', topic: 'Security governance', duration: '4 min', title: 'A supplier needs access',
+    id: 'supplier-access', topic: 'Security governance', duration: '4 min', difficulty: 'intermediate', title: 'A supplier needs access',
     description: 'A new service provider asks for broad access to internal systems to complete a short support task.',
     learningObjective: 'Apply third-party risk review and least privilege before granting supplier access.',
     briefing: ['Confirm the business need, security requirements, and approved access route.', 'Grant only the minimum access needed and remove it when the task ends.'],
@@ -168,7 +168,7 @@ export const challenges = [
     explanation: 'Supplier access should be approved, attributable, limited to the task, and time-bound. Shared or permanent administrator credentials create unnecessary risk.',
   },
   {
-    id: 'mobile-permissions', topic: 'Mobile security', duration: '4 min', title: 'The flashlight wants your contacts',
+    id: 'mobile-permissions', topic: 'Mobile security', duration: '4 min', difficulty: 'foundational', title: 'The flashlight wants your contacts',
     description: 'A utility app requests access to contacts, messages, microphone, and location even though those features are not needed.',
     learningObjective: 'Assess mobile application permissions and reduce unnecessary data access.',
     briefing: ['Check whether requested permissions match the app’s purpose.', 'Use trusted sources and deny or remove permissions that are not needed.'],
@@ -180,7 +180,7 @@ export const challenges = [
     explanation: 'Permissions should match an app’s legitimate function. Deny unrelated access and prefer a reputable alternative rather than exposing data unnecessarily.',
   },
   {
-    id: 'ai-confidential-prompt', topic: 'AI security', duration: '4 min', title: 'A confidential prompt',
+    id: 'ai-confidential-prompt', topic: 'AI security', duration: '4 min', difficulty: 'intermediate', title: 'A confidential prompt',
     description: 'A public AI assistant could help summarise a report, but the report contains confidential customer information.',
     learningObjective: 'Protect sensitive information when using AI tools and verify AI-generated outputs.',
     briefing: ['Only use tools approved for the information being processed.', 'Minimise sensitive data and independently check generated results.'],
@@ -192,7 +192,7 @@ export const challenges = [
     explanation: 'Do not put confidential data into a tool that is not approved to handle it. Follow policy, minimise or properly de-identify information where allowed, and check AI output before relying on it.',
   },
   {
-    id: 'usb-device', topic: 'Endpoint security', duration: '3 min', title: 'A USB drive in the lobby',
+    id: 'usb-device', topic: 'Endpoint security', duration: '3 min', difficulty: 'foundational', title: 'A USB drive in the lobby',
     description: 'You find an unknown USB drive near the office entrance. Its label says “Payroll”.',
     learningObjective: 'Handle unknown removable media without exposing devices to malware.',
     briefing: ['Unknown removable media may contain malicious files or shortcuts.', 'Give found media to the authorised IT/security team for safe handling.'],
@@ -204,7 +204,7 @@ export const challenges = [
     explanation: 'Unknown media can expose any connected device. Do not plug it in; pass it to the authorised team for handling under the organisation’s process.',
   },
   {
-    id: 'lost-laptop', topic: 'Data protection', duration: '4 min', title: 'The missing work laptop',
+    id: 'lost-laptop', topic: 'Data protection', duration: '4 min', difficulty: 'intermediate', title: 'The missing work laptop',
     description: 'A staff member cannot find a work laptop after travelling. It may contain business files.',
     learningObjective: 'Report a lost device promptly so authorised teams can protect accounts and assess data exposure.',
     briefing: ['Report loss through the organisation’s incident channel as soon as possible.', 'Do not delay while searching or attempt unapproved remote actions.'],
@@ -216,7 +216,7 @@ export const challenges = [
     explanation: 'Prompt reporting lets authorised teams revoke sessions, assess stored data, and use approved device protections. Do not share credentials or attempt unapproved access.',
   },
   {
-    id: 'recovery-check', topic: 'Business continuity', duration: '5 min', title: 'Can the backup be trusted?',
+    id: 'recovery-check', topic: 'Business continuity', duration: '5 min', difficulty: 'advanced', title: 'Can the backup be trusted?',
     description: 'After a simulated incident, a team must choose how to restore a critical service from backups.',
     learningObjective: 'Restore services from verified backups and check security before returning to normal operation.',
     briefing: ['Confirm the incident is contained before reconnecting restored systems.', 'Use known-good backups and verify them in an isolated process.'],
@@ -228,7 +228,7 @@ export const challenges = [
     explanation: 'Validate that a backup is clean before restoration. Recover in a controlled way, apply the incident plan, and verify protections before reconnecting the service.',
   },
   {
-    id: 'access-review', topic: 'Identity & access', duration: '4 min', title: 'The former contractor',
+    id: 'access-review', topic: 'Identity & access', duration: '4 min', difficulty: 'intermediate', title: 'The former contractor',
     description: 'A contractor has finished a project, but their account still appears in the team’s access list.',
     learningObjective: 'Apply timely access removal and account lifecycle controls.',
     briefing: ['Access should match a current business need.', 'Use the approved offboarding process and confirm service ownership before removal.'],
