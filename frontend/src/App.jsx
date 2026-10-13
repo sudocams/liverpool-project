@@ -2,8 +2,10 @@ import React, { useEffect, useMemo, useState } from 'react';
 import EvaluationPanel from './EvaluationPanel.jsx';
 import AuthScreen from './AuthScreen.jsx';
 import AdminPanel from './AdminPanel.jsx';
+import StudyConsent from './StudyConsent.jsx';
 
-const blankProgress = { attempts: [], completed: [] };
+const blankProgress = { attempts: [], completed: [], assessments: [], researchFeedback: null };
+const hasCurrentConsent = account => Boolean(account?.researchConsent?.acceptedAt && account.researchConsent.version === account.studyInfoVersion);
 
 function getSkillLevel(completedCount, totalCount) {
   if (totalCount > 0 && completedCount >= totalCount) return 'Pathfinder';
@@ -49,6 +51,8 @@ function App() {
   const [account, setAccount] = useState(null);
   const [authChecked, setAuthChecked] = useState(false);
   const [newAccountHandle, setNewAccountHandle] = useState('');
+  const [practiceOnly, setPracticeOnly] = useState(false);
+  const [showConsent, setShowConsent] = useState(false);
   const challenge = challenges.find(item => item.id === challengeId) ?? challenges[0];
   const totalPoints = useMemo(() => progress.attempts.reduce((sum, item) => sum + item.points, 0), [progress]);
   const accuracy = progress.attempts.length ? Math.round(progress.attempts.filter(item => item.correct).length / progress.attempts.length * 100) : null;
@@ -77,11 +81,13 @@ function App() {
     if (!account) return undefined;
     let cancelled = false;
     setLoading(true);
-    Promise.all([
-      fetch('/api/challenges').then(response => { if (!response.ok) throw new Error('Could not load challenges.'); return response.json(); }),
+    const optedIn = account.role === 'admin' || hasCurrentConsent(account);
+    const requests = [fetch('/api/challenges').then(response => { if (!response.ok) throw new Error('Could not load challenges.'); return response.json(); })];
+    if (optedIn) requests.push(
       fetch('/api/progress').then(response => { if (!response.ok) throw new Error('Could not load your progress.'); return response.json(); }),
       fetch('/api/recommendations').then(response => { if (!response.ok) throw new Error('Could not load your recommendation.'); return response.json(); }),
-    ]).then(([items, savedProgress, nextStep]) => {
+    );
+    Promise.all(requests).then(([items, savedProgress = blankProgress, nextStep = null]) => {
       if (cancelled) return;
       setChallenges(items);
       setProgress(savedProgress);
@@ -92,7 +98,7 @@ function App() {
       if (!cancelled) setApiError(`${error.message} Start the backend server in the backend folder, then refresh.`);
     }).finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [account?.handle]);
+  }, [account?.handle, account?.researchConsent?.acceptedAt]);
 
   async function signOut() {
     await fetch('/api/auth/logout', { method: 'POST' });
@@ -100,6 +106,23 @@ function App() {
     setActiveView('learning');
     setProgress(blankProgress);
     setNewAccountHandle('');
+    setPracticeOnly(false);
+    setShowConsent(false);
+  }
+
+  async function withdrawFromResearch() {
+    if (!window.confirm('Withdraw from the study? This permanently deletes your saved challenge history, assessment results, and questionnaire ratings. Your sign-in account remains for practice-only use.')) return;
+    try {
+      const response = await fetch('/api/research/consent', { method: 'DELETE' });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Could not withdraw from the study.');
+      setAccount(current => ({ ...current, researchConsent: { version: null, acceptedAt: null } }));
+      setPracticeOnly(true);
+      setProgress(blankProgress);
+      setRecommendation(null);
+      setActiveView('learning');
+      setApiError('');
+    } catch (error) { setApiError(error.message); }
   }
 
   function chooseChallenge(item) {
@@ -113,12 +136,14 @@ function App() {
     const confirmed = window.confirm('Reset your challenge progress and learning history?');
     if (!confirmed) return;
 
-    try {
-      const response = await fetch('/api/progress', { method: 'DELETE' });
-      if (!response.ok) throw new Error('Could not reset progress.');
-    } catch (error) {
-      setApiError(`${error.message} Your local draft could not be cleared. Please try again.`);
-      return;
+    if (account.role === 'admin' || hasCurrentConsent(account)) {
+      try {
+        const response = await fetch('/api/progress', { method: 'DELETE' });
+        if (!response.ok) throw new Error('Could not reset progress.');
+      } catch (error) {
+        setApiError(`${error.message} Your local draft could not be cleared. Please try again.`);
+        return;
+      }
     }
 
     const freshProgress = blankProgress;
@@ -136,16 +161,25 @@ function App() {
     setSubmitting(true);
     setApiError('');
     try {
-      const response = await fetch('/api/attempts', {
+      const participating = account.role === 'admin' || hasCurrentConsent(account);
+      const response = await fetch(participating ? '/api/attempts' : '/api/practice/answer', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ challengeId: challenge.id, selectedOption, hintsUsed }),
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || 'Could not submit your answer.');
-      setProgress(result.progress);
-      setRecommendation(result.recommendation);
-      setFeedback({ correct: result.attempt.correct, points: result.attempt.points, hintsUsed: result.attempt.hintsUsed ?? 0, explanation: result.feedback.text, feedbackSource: result.feedback.source });
+      if (participating) {
+        setProgress(result.progress);
+        setRecommendation(result.recommendation);
+      } else {
+        const attempt = { challengeId: challenge.id, topic: challenge.topic, correct: result.correct, points: result.points, hintsUsed: 0 };
+        const completed = result.correct && !progress.completed.includes(challenge.id) ? [...progress.completed, challenge.id] : progress.completed;
+        setProgress(current => ({ ...current, attempts: [...current.attempts, attempt], completed }));
+        const next = challenges.find(item => !completed.includes(item.id));
+        setRecommendation(next ? { challengeId: next.id, topic: next.topic, message: `Continue with ${next.title}. This practice suggestion is not saved.`, reason: 'practice session only' } : { challengeId: challenge.id, topic: challenge.topic, message: 'You have completed every challenge in this session. You can review any module.', reason: 'practice session only' });
+      }
+      setFeedback({ correct: participating ? result.attempt.correct : result.correct, points: participating ? result.attempt.points : result.points, hintsUsed: participating ? result.attempt.hintsUsed ?? 0 : 0, explanation: result.feedback.text, feedbackSource: result.feedback.source });
     } catch (error) {
       setApiError(`${error.message} Check that the backend is running, then try again.`);
     } finally {
@@ -157,8 +191,32 @@ function App() {
     chooseChallenge(challenges.find(item => item.id === recommendation?.challengeId) ?? nextChallenge ?? challenge);
   }
 
+  async function participate(consent) {
+    setAccount(current => ({ ...current, researchConsent: consent }));
+    setPracticeOnly(false);
+    setShowConsent(false);
+    setActiveView('learning');
+  }
+
+  async function withdrawFromConsentScreen() {
+    if (!window.confirm('Withdraw from the study and permanently delete saved study records? Your sign-in account remains available for practice.')) return;
+    try {
+      const response = await fetch('/api/research/consent', { method: 'DELETE' });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Could not withdraw from the study.');
+      setAccount(current => ({ ...current, researchConsent: { version: null, acceptedAt: null } }));
+      setPracticeOnly(true);
+      setProgress(blankProgress);
+      setShowConsent(false);
+      setApiError('');
+    } catch (error) { setApiError(error.message); }
+  }
+
   if (!authChecked) return <main className="auth-loading">Connecting to CyberWolf…</main>;
   if (!account) return <AuthScreen onAuthenticated={(signedInAccount, isNew) => { setAccount(signedInAccount); setNewAccountHandle(isNew ? signedInAccount.handle : ''); setApiError(''); }} />;
+  if (account.role === 'learner' && (showConsent || (!practiceOnly && !hasCurrentConsent(account)))) {
+    return <StudyConsent version={account.studyInfoVersion || 'draft-1'} previouslyConsented={Boolean(account.researchConsent?.acceptedAt)} actionError={apiError} onParticipate={participate} onPractice={() => { setPracticeOnly(true); setShowConsent(false); }} onWithdraw={withdrawFromConsentScreen} />;
+  }
 
   return (
     <div className="app-shell">
@@ -167,19 +225,20 @@ function App() {
         <div className="side-label">LEARN</div>
         <nav>
           <a className={`nav-link${activeView === 'learning' ? ' active' : ''}`} href="#home" onClick={event => { event.preventDefault(); setActiveView('learning'); }}><span aria-hidden="true">◈</span> Overview</a>
-          <a className={`nav-link${activeView === 'learning' ? '' : ' active'}`} href="#evaluation" onClick={event => { event.preventDefault(); setActiveView('evaluation'); }}><span aria-hidden="true">▥</span> Evaluation</a>
+          {(account.role === 'admin' || hasCurrentConsent(account)) && <a className={`nav-link${activeView === 'evaluation' ? ' active' : ''}`} href="#evaluation" onClick={event => { event.preventDefault(); setActiveView('evaluation'); }}><span aria-hidden="true">▥</span> Evaluation</a>}
           {account.role === 'admin' && <a className={`nav-link${activeView === 'admin' ? ' active' : ''}`} href="#admin" onClick={event => { event.preventDefault(); setActiveView('admin'); }}><span aria-hidden="true">⚙</span> Admin</a>}
         </nav>
         <div className="sidebar-bottom"><div className="side-label">YOUR FIELD GUIDE</div><p>Small, smart decisions make a safer digital world.</p><div className="wolf-card"><span aria-hidden="true">🐺</span><div><strong>Stay curious.</strong><small>Think before you click.</small></div></div></div>
       </aside>
 
       <main id="home" className="main-content">
-        <header className="topbar"><div className="breadcrumb">LEARN <span>/</span> {activeView.toUpperCase()}</div><div className="user-chip"><span className="avatar">{account.role === 'admin' ? 'A' : 'W'}</span><span>{account.handle} · {account.role}</span><button className="logout-button" type="button" onClick={signOut}>Sign out</button></div></header>
+        <header className="topbar"><div className="breadcrumb">LEARN <span>/</span> {activeView.toUpperCase()}</div><div className="user-chip"><span className="avatar">{account.role === 'admin' ? 'A' : 'W'}</span><span>{account.handle} · {account.role}</span>{account.role === 'learner' && (hasCurrentConsent(account) ? <button className="logout-button" type="button" onClick={withdrawFromResearch}>Withdraw</button> : <button className="logout-button" type="button" onClick={() => setShowConsent(true)}>Join study</button>)}<button className="logout-button" type="button" onClick={signOut}>Sign out</button></div></header>
         <section className="welcome-row"><div><div className="eyebrow"><span className="status-dot" /> YOUR CYBERSECURITY FIELD GUIDE</div><h1>Make the smart call.</h1><p className="subtitle">Real-world scenarios. Better instincts. One challenge at a time.</p></div><div className="streak-card"><span className="streak-icon">✦</span><div><small>YOUR POINTS</small><strong>{totalPoints} <span>XP</span></strong></div></div></section>
 
         {newAccountHandle && <div className="new-handle-banner" role="status"><strong>Your sign-in handle is {newAccountHandle}</strong><span>Save it with your password. It cannot be recovered because CyberWolf does not collect contact details.</span><button type="button" onClick={() => setNewAccountHandle('')}>I’ve saved it</button></div>}
+        {practiceOnly && <div className="practice-status" role="status">Practice-only mode: answers are sent to CyberWolf for grading but are not saved; progress stays in this browser session. <button className="logout-button" type="button" onClick={() => setShowConsent(true)}>Review study information</button></div>}
         {apiError && <div className="api-error" role="alert">{apiError}</div>}
-        {activeView === 'admin' && account.role === 'admin' ? <AdminPanel /> : activeView === 'evaluation' ? <EvaluationPanel /> : <>
+        {activeView === 'admin' && account.role === 'admin' ? <AdminPanel /> : activeView === 'evaluation' && (account.role === 'admin' || hasCurrentConsent(account)) ? <EvaluationPanel participant={account.role === 'learner'} /> : <>
         <section className="stats-grid" aria-label="Learning summary">
           <article className="stat-card"><span className="stat-icon green">◉</span><div><span className="stat-label">MODULES COMPLETED</span><strong>{progress.completed.length} <small>/ {challenges.length}</small></strong></div><span className="stat-note">Keep it going</span></article>
           <article className="stat-card"><span className="stat-icon gold">✧</span><div><span className="stat-label">ACCURACY</span><strong>{accuracy ?? '—'}<small>%</small></strong></div><span className="stat-note">Across attempts</span></article>

@@ -23,7 +23,9 @@ export default function AuthScreen({ onAuthenticated }) {
       const response = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       const result = response.status === 204 ? {} : await response.json();
       if (!response.ok) throw new Error(result.error || 'Could not authenticate.');
-      onAuthenticated({ handle: result.handle, role: result.role }, mode !== 'login');
+      const accountResponse = await fetch('/api/auth/me');
+      const currentAccount = accountResponse.ok ? await accountResponse.json() : { handle: result.handle, role: result.role };
+      onAuthenticated(currentAccount, mode !== 'login');
     } catch (submitError) {
       setError(`${submitError.message} Check that the backend server is running.`);
     } finally {

@@ -12,7 +12,7 @@ npm install
 npm run dev
 ```
 
-The frontend presents five short learning modules with objectives, briefing points, and scenario challenges. It includes optional hints, achievements, a missed-module review list, topic mastery summaries, AI-assisted feedback with a guided fallback, and pre/post knowledge checks. Accounts are password-only: the server issues a random sign-in handle, with no name, email, phone number, or personal ID requested. Learner progress is scoped to the signed-in account.
+The frontend presents five short learning modules with objectives, briefing points, and scenario challenges. It includes optional hints, achievements, a missed-module review list, topic mastery summaries, AI-assisted feedback with a guided fallback, and pre/post knowledge checks. Accounts are password-only: the server issues a random sign-in handle, with no name, email, phone number, or personal ID requested. Learner progress is scoped to the signed-in account. Research participation is optional, with practice-only mode, explicit consent, withdrawal and deletion, an optional structured experience questionnaire, and aggregate admin reporting.
 
 ## Backend
 

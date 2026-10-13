@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 
-export default function EvaluationPanel() {
+export default function EvaluationPanel({ participant = true }) {
   const [phase, setPhase] = useState(null);
   const [questions, setQuestions] = useState([]);
   const [answers, setAnswers] = useState({});
@@ -8,12 +8,17 @@ export default function EvaluationPanel() {
   const [result, setResult] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [feedback, setFeedback] = useState(null);
+  const [ratings, setRatings] = useState({ usability: 0, engagement: 0, learningValue: 0, adaptationRelevance: 0, feedbackClarity: 0 });
+  const [feedbackSaved, setFeedbackSaved] = useState(false);
 
   async function refreshData() {
     const progressResponse = await fetch('/api/progress');
     if (!progressResponse.ok) throw new Error('Could not load evaluation data.');
     const progress = await progressResponse.json();
     setAssessments(progress.assessments ?? []);
+    setFeedback(progress.researchFeedback ?? null);
+    if (progress.researchFeedback) setRatings(Object.fromEntries(Object.keys(ratings).map(key => [key, progress.researchFeedback[key] ?? 0])));
   }
 
   useEffect(() => {
@@ -60,6 +65,23 @@ export default function EvaluationPanel() {
     }
   }
 
+  async function submitFeedback(event) {
+    event.preventDefault();
+    setBusy(true);
+    setError('');
+    try {
+      const response = await fetch('/api/research/feedback', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ratings }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Could not submit the questionnaire.');
+      setFeedback(data.researchFeedback);
+      setFeedbackSaved(true);
+    } catch (submitError) { setError(submitError.message); }
+    finally { setBusy(false); }
+  }
+
   const latest = Object.fromEntries(['pre', 'post'].map(itemPhase => [
     itemPhase,
     assessments.filter(item => item.phase === itemPhase).sort((a, b) => new Date(b.at) - new Date(a.at))[0],
@@ -85,6 +107,20 @@ export default function EvaluationPanel() {
       </form>}
 
       {result && <div className="assessment-result" role="status"><div className="result-score"><span>{phase === 'pre' ? 'PRE-ASSESSMENT RESULT' : 'POST-ASSESSMENT RESULT'}</span><strong>{result.score}<small> / {result.total}</small></strong><p>{Math.round(result.score / result.total * 100)}% correct</p></div><div className="result-explanations"><h3>Answer review</h3>{result.results.map((answer, index) => <div className="answer-review" key={answer.questionId}><span className={answer.correct ? 'review-correct' : 'review-incorrect'}>{answer.correct ? '✓' : '↻'}</span><p><b>{index + 1}. {answer.topic}</b><small>{answer.explanation}</small></p></div>)}<button className="secondary-button" type="button" onClick={() => { setPhase(null); setResult(null); }}>Back to evaluation</button></div></div>}
+
+      {participant && <form className="research-questionnaire" onSubmit={submitFeedback}>
+        <div className="eyebrow">OPTIONAL PARTICIPANT QUESTIONNAIRE</div>
+        <h3>{feedback ? 'Update your experience ratings' : 'How was your CyberWolf experience?'}</h3>
+        <p>Rate each statement from 1 (strongly disagree) to 5 (strongly agree). You can update your answers later. No written comments or personal details are requested.</p>
+        {[
+          ['usability', 'The platform was easy to use.'],
+          ['engagement', 'The challenges kept me engaged.'],
+          ['learningValue', 'The activities helped me understand cybersecurity decisions.'],
+          ['adaptationRelevance', 'The recommended next activities felt relevant to my progress.'],
+          ['feedbackClarity', 'The answer feedback was clear and useful.'],
+        ].map(([key, label]) => <fieldset className="rating-row" key={key}><legend>{label}</legend><div role="radiogroup" aria-label={label}>{[1, 2, 3, 4, 5].map(value => <label className={`rating-option${ratings[key] === value ? ' selected' : ''}`} key={value}><input type="radio" name={key} value={value} checked={ratings[key] === value} onChange={() => setRatings(current => ({ ...current, [key]: value }))} /><span>{value}</span></label>)}</div></fieldset>)}
+        <div className="assessment-submit-row"><span className="hint">{feedbackSaved ? 'Your ratings were saved.' : feedback ? 'Your latest saved ratings are loaded.' : 'Questionnaire is optional.'}</span><button className="primary-button" type="submit" disabled={busy || Object.values(ratings).some(value => !value)}>{busy ? 'Saving…' : feedback ? 'Update ratings →' : 'Submit ratings →'}</button></div>
+      </form>}
 
     </section>
   );

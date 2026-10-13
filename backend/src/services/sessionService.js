@@ -1,4 +1,5 @@
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { getUserById } from './authService.js';
 
 if (process.env.NODE_ENV === 'production' && (!process.env.SESSION_SECRET || process.env.SESSION_SECRET.length < 32)) {
   throw new Error('Set SESSION_SECRET to a private value of at least 32 characters in production.');
@@ -50,15 +51,26 @@ export function attachSession(req, _res, next) {
   next();
 }
 
-export function requireAuth(req, res, next) {
+export async function requireAuth(req, res, next) {
   if (!req.account) return res.status(401).json({ error: 'Sign in to continue.' });
+  try {
+    const account = await getUserById(req.account.accountId);
+    if (!account) return res.status(401).json({ error: 'This account is no longer active. Sign in again.' });
+    req.account = { ...req.account, role: account.role, researchConsent: account.researchConsent };
+  } catch (error) { return next(error); }
   return next();
 }
 
 export function requireRole(role) {
-  return (req, res, next) => {
-    if (!req.account) return res.status(401).json({ error: 'Sign in to continue.' });
+  return (req, res, next) => requireAuth(req, res, error => {
+    if (error) return next(error);
     if (req.account.role !== role) return res.status(403).json({ error: 'You do not have permission to use this feature.' });
     return next();
-  };
+  });
+}
+
+export function requireStudyConsent(req, res, next) {
+  const currentVersion = process.env.STUDY_INFO_VERSION || 'draft-1';
+  if (req.account?.role === 'admin' || (req.account?.researchConsent?.acceptedAt && req.account.researchConsent.version === currentVersion)) return next();
+  return res.status(403).json({ error: 'Research participation is not enabled for this account. Choose to participate or continue in practice-only mode.' });
 }

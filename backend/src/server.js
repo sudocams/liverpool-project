@@ -3,16 +3,22 @@ import cors from 'cors';
 import express from 'express';
 import mongoose from 'mongoose';
 import { getAssessment, isAssessmentAnswerValid, scoreAssessment } from './content/assessments.js';
-import { getProgress, saveProgress, deleteProgress, listProgress } from './services/progressStore.js';
+import { getProgress, saveProgress, deleteProgress, listProgressForAccounts } from './services/progressStore.js';
 import { recommendNextActivity } from './services/adaptiveEngine.js';
 import { generateChallengeFeedback } from './services/feedbackService.js';
-import { authenticateUser, createUser, hasAdminAccount, validatePassword } from './services/authService.js';
-import { attachSession, clearSessionCookie, createSession, makeSessionCookie, requireAuth, requireRole } from './services/sessionService.js';
+import { authenticateUser, clearResearchConsent, createUser, getUserById, hasAdminAccount, listResearchConsentedParticipants, setResearchConsent, validatePassword } from './services/authService.js';
+import { attachSession, clearSessionCookie, createSession, makeSessionCookie, requireAuth, requireRole, requireStudyConsent } from './services/sessionService.js';
 import { createModule, deleteModule, getModule, listModules, seedModules, updateModule, validateModule } from './services/moduleStore.js';
 
 const app = express();
 const port = Number(process.env.PORT) || 4000;
 const allowedOrigin = process.env.FRONTEND_ORIGIN || 'http://localhost:5173';
+const studyInfoVersion = process.env.STUDY_INFO_VERSION || 'draft-1';
+
+function publicChallenge(challenge) {
+  const { answerIndex, ...publicContent } = challenge;
+  return publicContent;
+}
 
 app.use(cors({ origin: allowedOrigin, credentials: true }));
 app.use(express.json({ limit: '10kb' }));
@@ -47,7 +53,25 @@ app.post('/api/auth/logout', (_req, res) => {
   return res.status(204).end();
 });
 
-app.get('/api/auth/me', requireAuth, (req, res) => res.json({ handle: req.account.handle, role: req.account.role }));
+app.get('/api/auth/me', requireAuth, (req, res) => res.json({ handle: req.account.handle, role: req.account.role, researchConsent: req.account.researchConsent ?? { version: null, acceptedAt: null }, studyInfoVersion }));
+
+app.post('/api/research/consent', requireAuth, async (req, res, next) => {
+  try {
+    if (req.account.role !== 'learner') return res.status(403).json({ error: 'Research consent is for learner accounts.' });
+    if (req.body?.accept !== true || req.body?.version !== studyInfoVersion) return res.status(400).json({ error: 'Review the current study information and explicitly accept it to participate.' });
+    const consent = await setResearchConsent(req.account.accountId, studyInfoVersion);
+    return res.json({ researchConsent: consent });
+  } catch (error) { return next(error); }
+});
+
+app.delete('/api/research/consent', requireAuth, async (req, res, next) => {
+  try {
+    if (req.account.role !== 'learner') return res.status(403).json({ error: 'Research withdrawal is for learner accounts.' });
+    await deleteProgress(req.account.accountId);
+    await clearResearchConsent(req.account.accountId);
+    return res.json({ message: 'Research participation has ended and saved study records were deleted.' });
+  } catch (error) { return next(error); }
+});
 
 app.post('/api/auth/bootstrap-admin', async (req, res, next) => {
   try {
@@ -76,13 +100,13 @@ app.get('/api/challenges/:challengeId', async (req, res, next) => {
   } catch (error) { return next(error); }
 });
 
-app.get('/api/progress', requireAuth, async (req, res, next) => {
+app.get('/api/progress', requireAuth, requireStudyConsent, async (req, res, next) => {
   try {
     return res.json(await getProgress(req.account.accountId));
   } catch (error) { return next(error); }
 });
 
-app.get('/api/recommendations', requireAuth, async (req, res, next) => {
+app.get('/api/recommendations', requireAuth, requireStudyConsent, async (req, res, next) => {
   try {
     const [progress, modules] = await Promise.all([getProgress(req.account.accountId), listModules()]);
     return res.json(recommendNextActivity(progress, modules));
@@ -95,7 +119,7 @@ app.get('/api/assessments/:phase', (req, res) => {
   return res.json({ phase: req.params.phase, questions });
 });
 
-app.post('/api/assessments', requireAuth, async (req, res, next) => {
+app.post('/api/assessments', requireAuth, requireStudyConsent, async (req, res, next) => {
   try {
     const { phase, answers } = req.body ?? {};
     if (!isAssessmentAnswerValid(phase, answers)) return res.status(400).json({ error: 'Submit one valid answer for every assessment question.' });
@@ -114,9 +138,40 @@ app.post('/api/assessments', requireAuth, async (req, res, next) => {
   } catch (error) { return next(error); }
 });
 
+app.post('/api/research/feedback', requireAuth, requireStudyConsent, async (req, res, next) => {
+  try {
+    if (req.account.role !== 'learner') return res.status(403).json({ error: 'The participant questionnaire is for learner accounts.' });
+    const fields = ['usability', 'engagement', 'learningValue', 'adaptationRelevance', 'feedbackClarity'];
+    const response = req.body?.ratings;
+    if (!response || fields.some(field => !Number.isInteger(response[field]) || response[field] < 1 || response[field] > 5)) {
+      return res.status(400).json({ error: 'Rate every item from 1 (strongly disagree) to 5 (strongly agree).' });
+    }
+    const progress = await getProgress(req.account.accountId);
+    const researchFeedback = { ...Object.fromEntries(fields.map(field => [field, response[field]])), at: new Date().toISOString() };
+    await saveProgress(req.account.accountId, { ...progress, researchFeedback });
+    return res.status(201).json({ researchFeedback });
+  } catch (error) { return next(error); }
+});
+
 app.get('/api/research/summary', requireRole('admin'), async (_req, res, next) => {
   try {
-    const learners = await listProgress();
+    const participants = await listResearchConsentedParticipants();
+    const participantDates = new Map(participants.map(item => [item.id, new Date(item.acceptedAt).getTime()]));
+    const participantIds = participants.map(item => item.id);
+    const storedProgress = await listProgressForAccounts(participantIds);
+    const progressByAccount = new Map(storedProgress.map(record => [record.learnerId, record]));
+    const learners = participants.map(participant => {
+      const record = progressByAccount.get(participant.id) ?? { attempts: [], assessments: [], researchFeedback: null };
+      const startsAt = participantDates.get(participant.id);
+      const afterConsent = item => new Date(item.at).getTime() >= startsAt;
+      const attempts = (record.attempts ?? []).filter(afterConsent);
+      return {
+        attempts,
+        assessments: (record.assessments ?? []).filter(afterConsent),
+        completed: [...new Set(attempts.filter(item => item.correct).map(item => item.challengeId))],
+        researchFeedback: record.researchFeedback && afterConsent(record.researchFeedback) ? record.researchFeedback : null,
+      };
+    });
     const pairs = learners.map(learner => {
       const latestByPhase = {};
       for (const assessment of learner.assessments ?? []) {
@@ -126,28 +181,34 @@ app.get('/api/research/summary', requireRole('admin'), async (_req, res, next) =
     });
     const matched = pairs.filter(pair => pair.pre && pair.post);
     const mean = values => values.length ? Math.round(values.reduce((sum, value) => sum + value, 0) / values.length * 10) / 10 : null;
+    const reportable = participants.length >= 5;
     const toPercent = item => item ? item.score / item.total * 100 : null;
     return res.json({
-      learnersWithPre: pairs.filter(pair => pair.pre).length,
-      learnersWithPost: pairs.filter(pair => pair.post).length,
-      matchedPairs: matched.length,
-      meanPrePercent: mean(matched.map(pair => toPercent(pair.pre))),
-      meanPostPercent: mean(matched.map(pair => toPercent(pair.post))),
-      meanChangePoints: mean(matched.map(pair => toPercent(pair.post) - toPercent(pair.pre))),
-      meanModulesCompleted: mean(pairs.map(pair => pair.completed)),
-      note: 'Aggregate prototype summary only. Confirm ethics approval and data protection before research use.',
+      learnersWithPre: reportable ? pairs.filter(pair => pair.pre).length : null,
+      learnersWithPost: reportable ? pairs.filter(pair => pair.post).length : null,
+      matchedPairs: reportable ? matched.length : null,
+      meanPrePercent: reportable ? mean(matched.map(pair => toPercent(pair.pre))) : null,
+      meanPostPercent: reportable ? mean(matched.map(pair => toPercent(pair.post))) : null,
+      meanChangePoints: reportable ? mean(matched.map(pair => toPercent(pair.post) - toPercent(pair.pre))) : null,
+      meanModulesCompleted: reportable ? mean(pairs.map(pair => pair.completed)) : null,
+      feedbackResponseCount: reportable ? learners.filter(learner => learner.researchFeedback).length : null,
+      feedbackMeanRatings: Object.fromEntries(['usability', 'engagement', 'learningValue', 'adaptationRelevance', 'feedbackClarity'].map(field => {
+        const values = learners.map(learner => learner.researchFeedback?.[field]).filter(Number.isInteger);
+        return [field, reportable && values.length >= 5 ? mean(values) : null];
+      })),
+      note: 'Only opted-in learner records are included. Aggregate means are hidden until at least five participants have consented; feedback means also require five responses. Consent text remains a draft until approved for the study.',
     });
   } catch (error) { return next(error); }
 });
 
-app.delete('/api/progress', requireAuth, async (req, res, next) => {
+app.delete('/api/progress', requireAuth, requireStudyConsent, async (req, res, next) => {
   try {
     await deleteProgress(req.account.accountId);
     return res.status(204).end();
   } catch (error) { return next(error); }
 });
 
-app.post('/api/attempts', requireAuth, async (req, res, next) => {
+app.post('/api/attempts', requireAuth, requireStudyConsent, async (req, res, next) => {
   try {
     const { challengeId, selectedOption, hintsUsed = 0 } = req.body ?? {};
     if (typeof challengeId !== 'string') return res.status(400).json({ error: 'A challengeId is required.' });
@@ -166,11 +227,24 @@ app.post('/api/attempts', requireAuth, async (req, res, next) => {
       attempts: [...current.attempts, attempt],
       completed: correct && !current.completed.includes(challengeId) ? [...current.completed, challengeId] : current.completed,
       assessments: current.assessments ?? [],
+      researchFeedback: current.researchFeedback ?? null,
     };
     await saveProgress(req.account.accountId, progress);
     const feedback = await generateChallengeFeedback({ challenge, selectedOption, correct });
     const modules = await listModules();
     return res.status(201).json({ attempt, feedback, progress, recommendation: recommendNextActivity(progress, modules) });
+  } catch (error) { return next(error); }
+});
+
+app.post('/api/practice/answer', requireAuth, async (req, res, next) => {
+  try {
+    const { challengeId, selectedOption } = req.body ?? {};
+    if (typeof challengeId !== 'string' || !Number.isInteger(selectedOption)) return res.status(400).json({ error: 'Select an answer for a valid challenge.' });
+    const challenge = await getModule(challengeId);
+    if (!challenge) return res.status(404).json({ error: 'Challenge not found.' });
+    if (selectedOption < 0 || selectedOption >= challenge.options.length) return res.status(400).json({ error: 'selectedOption is out of range.' });
+    const correct = selectedOption === challenge.answerIndex;
+    return res.json({ correct, points: correct ? 100 : 10, feedback: { text: challenge.explanation, source: 'guided' } });
   } catch (error) { return next(error); }
 });
 

@@ -5,6 +5,10 @@ const userSchema = new mongoose.Schema({
   passwordSalt: { type: String, required: true },
   passwordHash: { type: String, required: true },
   role: { type: String, enum: ['learner', 'admin'], default: 'learner', required: true },
+  researchConsent: {
+    version: { type: String, default: null },
+    acceptedAt: { type: Date, default: null },
+  },
 }, { timestamps: true });
 
 export const User = mongoose.model('User', userSchema);

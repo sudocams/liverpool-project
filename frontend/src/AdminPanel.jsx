@@ -79,6 +79,13 @@ export default function AdminPanel() {
       <div className="section-heading"><div><div className="eyebrow">ADMINISTRATION</div><h2>Project control room</h2></div><span className="module-count">ADMIN ACCESS</span></div>
       <div className="research-summary"><div className="eyebrow">RESEARCH SUMMARY</div><h3>Aggregate evaluation snapshot</h3><div className="summary-grid">
         <div><span>Pre-assessments</span><strong>{summary?.learnersWithPre ?? '—'}</strong></div><div><span>Post-assessments</span><strong>{summary?.learnersWithPost ?? '—'}</strong></div><div><span>Matched pairs</span><strong>{summary?.matchedPairs ?? '—'}</strong></div><div><span>Mean pre score</span><strong>{summary?.meanPrePercent == null ? '—' : `${summary.meanPrePercent}%`}</strong></div><div><span>Mean post score</span><strong>{summary?.meanPostPercent == null ? '—' : `${summary.meanPostPercent}%`}</strong></div><div><span>Mean score change</span><strong>{summary?.meanChangePoints == null ? '—' : `${summary.meanChangePoints > 0 ? '+' : ''}${summary.meanChangePoints} pts`}</strong></div>
+      </div><h3 className="feedback-summary-title">Participant experience ratings (1–5)</h3><div className="summary-grid feedback-summary-grid">
+        <div><span>Questionnaire responses</span><strong>{summary?.feedbackResponseCount ?? '—'}</strong></div>
+        <div><span>Usability</span><strong>{summary?.feedbackMeanRatings?.usability ?? '—'}</strong></div>
+        <div><span>Engagement</span><strong>{summary?.feedbackMeanRatings?.engagement ?? '—'}</strong></div>
+        <div><span>Learning value</span><strong>{summary?.feedbackMeanRatings?.learningValue ?? '—'}</strong></div>
+        <div><span>Adaptation relevance</span><strong>{summary?.feedbackMeanRatings?.adaptationRelevance ?? '—'}</strong></div>
+        <div><span>Feedback clarity</span><strong>{summary?.feedbackMeanRatings?.feedbackClarity ?? '—'}</strong></div>
       </div><small className="summary-disclaimer">{summary?.note}</small></div>
 
       <div className="admin-module-layout"><section className="admin-module-list"><div className="eyebrow">LEARNING MODULES · {modules.length}</div><button className="primary-button new-module-button" type="button" onClick={() => { setSelectedId(null); setJsonText(JSON.stringify(blankModule, null, 2)); setMessage(''); setError(''); }}>+ New module</button>{modules.map(module => <button className={`admin-module-choice${selectedId === module.id ? ' selected' : ''}`} type="button" key={module.id} onClick={() => selectModule(module)}><b>{module.title}</b><small>{module.topic} · {module.id}</small></button>)}</section>
