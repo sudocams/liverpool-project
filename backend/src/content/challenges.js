@@ -1,0 +1,67 @@
+export const challenges = [
+  {
+    id: 'phishing', topic: 'Phishing', duration: '3 min', title: 'The delivery you weren’t expecting',
+    description: 'A message lands in your inbox while you’re working. It looks routine at first glance, but something feels a little off.',
+    learningObjective: 'Recognize common phishing signals and verify unexpected requests safely.',
+    briefing: ['Urgency and unfamiliar senders are reasons to pause.', 'Check a request through an official app or website you open yourself.'],
+    hints: ['Check the sender and notice the pressure to act quickly.', 'Verify the delivery using the company’s official app or site.'],
+    scenario: 'From: Parcel Desk <delivery-update@parcel-help.example>\nSubject: Action required: delivery on hold\n\n“We couldn’t deliver your package. Confirm your address within 2 hours to avoid a return.” There’s a button labelled “Reschedule delivery”.',
+    question: 'What’s the safest next step?',
+    options: ['Click the button to check whether the delivery is yours.', 'Reply and ask the sender to confirm your address.', 'Open the delivery company’s official app or website yourself to check.', 'Forward the message to a colleague and ask them to decide.'],
+    answerIndex: 2,
+    explanation: 'Going directly to the official app or website avoids trusting links in an unexpected message. Urgency, an unfamiliar sender, and a request to act are reasons to pause and verify.',
+  },
+  {
+    id: 'passwords', topic: 'Account security', duration: '3 min', title: 'One password, many doors',
+    description: 'You’re setting up a new account for a service you use regularly. You want a password that’s both practical and safe.',
+    learningObjective: 'Choose account protections that limit the impact of a stolen password.',
+    briefing: ['Use a unique password for every important account.', 'Enable multi-factor authentication when it is available.'],
+    hints: ['Consider what happens if another service is breached.', 'A second verification step can protect an account if a password leaks.'],
+    scenario: 'Situation: You already use a memorable password on a few other sites. The new account offers multi-factor authentication (MFA).',
+    question: 'Which choice best protects this account?',
+    options: ['Reuse your familiar password so it’s easy to remember.', 'Use a unique password and enable MFA.', 'Make a small change to your usual password.', 'Write your usual password in a note on your phone.'],
+    answerIndex: 1,
+    explanation: 'A unique password limits the damage if another service is breached. MFA adds another check, so a stolen password alone is less likely to give someone access.',
+  },
+  {
+    id: 'social-engineering', topic: 'Social engineering', duration: '3 min', title: 'A call from “IT support”',
+    description: 'A caller says they’re from IT and need your help fixing an urgent issue with your account.',
+    learningObjective: 'Respond safely to requests that use pressure or impersonate a trusted person.',
+    briefing: ['Never share one-time codes or approve an unexpected sign-in.', 'Contact the organisation using a channel you find independently.'],
+    hints: ['A one-time code can let someone sign in as you.', 'Call support using a contact method you already trust.'],
+    scenario: 'Caller: “We’ve detected suspicious activity. I can secure your account now, but first I need the one-time code we just sent you.”',
+    question: 'What should you do?',
+    options: ['Read the code out so support can secure the account.', 'Ask for their name and call the official IT support number yourself.', 'Share only the first few digits of the code.', 'Approve the sign-in prompt so the caller can investigate.'],
+    answerIndex: 1,
+    explanation: 'One-time codes and sign-in approvals are meant for you. Don’t share them with a caller. End the call and contact support using a number or channel you find independently.',
+  },
+  {
+    id: 'safe-downloads', topic: 'Malware & downloads', duration: '4 min', title: 'An update from an unfamiliar site',
+    description: 'A pop-up says your browser is out of date while you are downloading a free document reader.',
+    learningObjective: 'Identify risky software prompts and verify updates at their source.',
+    briefing: ['Unexpected update pop-ups can be used to distribute malicious software.', 'Update through the application itself or the developer’s official website.'],
+    hints: ['Ask whether a random page should be trusted to update your browser.', 'Use the browser settings or the developer’s official site.'],
+    scenario: 'You opened a download page from a search result. A pop-up claims your browser is out of date and offers an “urgent security update” download.',
+    question: 'What is the safest response?',
+    options: ['Download the update because the warning says it is urgent.', 'Close the pop-up and check for updates through your browser’s built-in settings or official website.', 'Disable your antivirus temporarily so the update can install.', 'Download the file and ask a friend whether it looks legitimate.'],
+    answerIndex: 1,
+    explanation: 'A website pop-up should not be trusted to supply a browser update. Close it, then use the browser’s built-in update function or navigate to the official developer site yourself.',
+  },
+  {
+    id: 'public-wifi', topic: 'Public Wi-Fi', duration: '4 min', title: 'The café network',
+    description: 'You are at a café and need to check an important account while connected to public Wi-Fi.',
+    learningObjective: 'Verify public networks and choose a safer connection for sensitive activity.',
+    briefing: ['Confirm the correct network name with the venue; lookalike networks can be set up nearby.', 'For sensitive account activity, prefer mobile data or a trusted connection.'],
+    hints: ['A network name can be copied by someone nearby.', 'Verify the network with staff and consider another connection for banking.'],
+    scenario: 'Several similar Wi-Fi names appear in the café. You need to check your bank account before leaving.',
+    question: 'Which choice best reduces your risk?',
+    options: ['Join the network with the strongest signal and sign in to your bank.', 'Ask café staff to confirm its official network, then use mobile data for the banking task.', 'Use whichever network has “secure” in its name.', 'Ask someone nearby which network they use and connect to that one.'],
+    answerIndex: 1,
+    explanation: 'A familiar-looking network name is not proof that it belongs to the café. Verify the official network with staff, and use mobile data for sensitive account activity when possible.',
+  },
+];
+
+export function publicChallenge(challenge) {
+  const { answerIndex, ...safeChallenge } = challenge;
+  return safeChallenge;
+}

@@ -1,0 +1,64 @@
+import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+
+if (process.env.NODE_ENV === 'production' && (!process.env.SESSION_SECRET || process.env.SESSION_SECRET.length < 32)) {
+  throw new Error('Set SESSION_SECRET to a private value of at least 32 characters in production.');
+}
+const secret = process.env.SESSION_SECRET || randomBytes(32).toString('hex');
+const cookieName = 'cyberwolf_session';
+const sessionDurationSeconds = 60 * 60 * 8;
+
+function sign(payload) {
+  return createHmac('sha256', secret).update(payload).digest('base64url');
+}
+
+export function createSession(account) {
+  const payload = Buffer.from(JSON.stringify({ sub: account.id, handle: account.handle, role: account.role, exp: Math.floor(Date.now() / 1000) + sessionDurationSeconds })).toString('base64url');
+  return `${payload}.${sign(payload)}`;
+}
+
+export function makeSessionCookie(token) {
+  const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
+  return `${cookieName}=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${sessionDurationSeconds}${secure}`;
+}
+
+export function clearSessionCookie() {
+  const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
+  return `${cookieName}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0${secure}`;
+}
+
+function readCookie(header = '') {
+  const pair = header.split(';').map(item => item.trim()).find(item => item.startsWith(`${cookieName}=`));
+  return pair?.slice(cookieName.length + 1);
+}
+
+function verifyToken(token) {
+  if (!token || token.length > 2048) return null;
+  const [payload, signature, extra] = token.split('.');
+  if (!payload || !signature || extra) return null;
+  const expected = Buffer.from(sign(payload));
+  const received = Buffer.from(signature);
+  if (received.length !== expected.length || !timingSafeEqual(received, expected)) return null;
+  try {
+    const claims = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+    if (!claims.sub || !claims.handle || !['learner', 'admin'].includes(claims.role) || claims.exp < Math.floor(Date.now() / 1000)) return null;
+    return { accountId: claims.sub, handle: claims.handle, role: claims.role };
+  } catch { return null; }
+}
+
+export function attachSession(req, _res, next) {
+  req.account = verifyToken(readCookie(req.headers.cookie));
+  next();
+}
+
+export function requireAuth(req, res, next) {
+  if (!req.account) return res.status(401).json({ error: 'Sign in to continue.' });
+  return next();
+}
+
+export function requireRole(role) {
+  return (req, res, next) => {
+    if (!req.account) return res.status(401).json({ error: 'Sign in to continue.' });
+    if (req.account.role !== role) return res.status(403).json({ error: 'You do not have permission to use this feature.' });
+    return next();
+  };
+}
