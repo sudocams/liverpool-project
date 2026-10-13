@@ -219,10 +219,13 @@ app.post('/api/attempts', requireAuth, requireStudyConsent, async (req, res, nex
     if (selectedOption < 0 || selectedOption >= challenge.options.length) return res.status(400).json({ error: 'selectedOption is out of range.' });
     if (hintsUsed > (challenge.hints?.length ?? 0)) return res.status(400).json({ error: 'hintsUsed is out of range.' });
 
-    const correct = selectedOption === challenge.answerIndex;
-    const points = correct ? Math.max(40, 100 - hintsUsed * 20) : 10;
-    const attempt = { challengeId, topic: challenge.topic, correct, points, hintsUsed, at: new Date().toISOString() };
     const current = await getProgress(req.account.accountId);
+    const correct = selectedOption === challenge.answerIndex;
+    const firstClear = correct && !current.completed.includes(challengeId);
+    const points = correct
+      ? firstClear ? Math.max(40, 100 - hintsUsed * 20) : Math.max(10, 25 - hintsUsed * 5)
+      : 5;
+    const attempt = { challengeId, topic: challenge.topic, correct, points, hintsUsed, at: new Date().toISOString() };
     const progress = {
       attempts: [...current.attempts, attempt],
       completed: correct && !current.completed.includes(challengeId) ? [...current.completed, challengeId] : current.completed,
@@ -238,13 +241,16 @@ app.post('/api/attempts', requireAuth, requireStudyConsent, async (req, res, nex
 
 app.post('/api/practice/answer', requireAuth, async (req, res, next) => {
   try {
-    const { challengeId, selectedOption } = req.body ?? {};
+    const { challengeId, selectedOption, hintsUsed = 0 } = req.body ?? {};
     if (typeof challengeId !== 'string' || !Number.isInteger(selectedOption)) return res.status(400).json({ error: 'Select an answer for a valid challenge.' });
+    if (!Number.isInteger(hintsUsed) || hintsUsed < 0) return res.status(400).json({ error: 'hintsUsed must be a non-negative integer.' });
     const challenge = await getModule(challengeId);
     if (!challenge) return res.status(404).json({ error: 'Challenge not found.' });
     if (selectedOption < 0 || selectedOption >= challenge.options.length) return res.status(400).json({ error: 'selectedOption is out of range.' });
+    if (hintsUsed > (challenge.hints?.length ?? 0)) return res.status(400).json({ error: 'hintsUsed is out of range.' });
     const correct = selectedOption === challenge.answerIndex;
-    return res.json({ correct, points: correct ? 100 : 10, feedback: { text: challenge.explanation, source: 'guided' } });
+    const points = correct ? Math.max(40, 100 - hintsUsed * 20) : 5;
+    return res.json({ correct, points, feedback: { text: challenge.explanation, source: 'guided' } });
   } catch (error) { return next(error); }
 });
 

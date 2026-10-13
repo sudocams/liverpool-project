@@ -7,10 +7,17 @@ import StudyConsent from './StudyConsent.jsx';
 const blankProgress = { attempts: [], completed: [], assessments: [], researchFeedback: null };
 const hasCurrentConsent = account => Boolean(account?.researchConsent?.acceptedAt && account.researchConsent.version === account.studyInfoVersion);
 
-function getSkillLevel(completedCount, totalCount) {
-  if (totalCount > 0 && completedCount >= totalCount) return 'Pathfinder';
-  if (completedCount > 0) return 'Scout';
-  return 'Rookie';
+function getSkillLevel(completedCount) {
+  const ranks = [
+    { name: 'Rookie', threshold: 0 },
+    { name: 'Scout', threshold: 1 },
+    { name: 'Analyst', threshold: 5 },
+    { name: 'Specialist', threshold: 10 },
+    { name: 'Sentinel', threshold: 15 },
+    { name: 'Pathfinder', threshold: 20 },
+  ];
+  const index = ranks.reduce((current, rank, rankIndex) => completedCount >= rank.threshold ? rankIndex : current, 0);
+  return { ...ranks[index], next: ranks[index + 1] ?? null };
 }
 
 function summarizeTopics(attempts) {
@@ -26,13 +33,22 @@ function summarizeTopics(attempts) {
     .sort((a, b) => b.accuracy - a.accuracy);
 }
 
-function getAchievements(progress, moduleCount) {
+function getAchievements(progress, modules) {
   const correct = progress.attempts.filter(attempt => attempt.correct);
+  const completed = new Set(modules.filter(module => progress.completed.includes(module.id)).map(module => module.id));
+  const completedTopics = new Set(modules.filter(module => completed.has(module.id)).map(module => module.topic));
+  const accuracy = progress.attempts.length ? Math.round(correct.length / progress.attempts.length * 100) : 0;
   return [
-    { id: 'first-win', name: 'First clear', detail: 'Complete your first module.', earned: correct.length > 0, icon: '✦' },
-    { id: 'hint-free', name: 'Sharp instincts', detail: 'Answer a module correctly without hints.', earned: correct.some(attempt => (attempt.hintsUsed ?? 0) === 0), icon: '◈' },
-    { id: 'phishing', name: 'Signal spotter', detail: 'Complete the phishing module.', earned: progress.completed.includes('phishing'), icon: '⌁' },
-    { id: 'field-ready', name: 'Field ready', detail: 'Complete every learning module.', earned: moduleCount > 0 && progress.completed.length >= moduleCount, icon: '✓' },
+    { id: 'first-clear', name: 'First clear', detail: 'Clear your first mission.', earned: correct.length > 0, icon: '✦' },
+    { id: 'no-hints', name: 'Sharp instincts', detail: 'Clear a mission without hints.', earned: correct.some(attempt => (attempt.hintsUsed ?? 0) === 0), icon: '◈' },
+    { id: 'signal-spotter', name: 'Signal spotter', detail: 'Clear the phishing mission.', earned: completed.has('phishing'), icon: '⌁' },
+    { id: 'incident-ready', name: 'Incident ready', detail: 'Clear the ransomware response mission.', earned: completed.has('ransomware-response'), icon: '⚑' },
+    { id: 'cloud-guardian', name: 'Cloud guardian', detail: 'Clear the cloud security mission.', earned: completed.has('cloud-storage'), icon: '⬡' },
+    { id: 'wide-scan', name: 'Wide scan', detail: 'Clear missions across five cybersecurity topics.', earned: completedTopics.size >= 5, icon: '◎' },
+    { id: 'field-scout', name: 'Field scout', detail: 'Clear five missions.', earned: completed.size >= 5, icon: '5' },
+    { id: 'threat-analyst', name: 'Threat analyst', detail: 'Clear ten missions.', earned: completed.size >= 10, icon: '10' },
+    { id: 'cyberwolf-pathfinder', name: 'Pathfinder', detail: 'Clear all twenty missions.', earned: modules.length > 0 && completed.size >= modules.length, icon: '✓' },
+    { id: 'steady-hand', name: 'Steady hand', detail: 'Reach at least 80% accuracy after ten attempts.', earned: progress.attempts.length >= 10 && accuracy >= 80, icon: '⌖' },
   ];
 }
 
@@ -59,7 +75,10 @@ function App() {
   const nextChallenge = challenges.find(item => !progress.completed.includes(item.id));
   const topicSummary = useMemo(() => summarizeTopics(progress.attempts), [progress.attempts]);
   const strongestTopic = topicSummary[0];
-  const achievements = getAchievements(progress, challenges.length);
+  const achievements = getAchievements(progress, challenges);
+  const clearedCount = challenges.filter(item => progress.completed.includes(item.id)).length;
+  const rank = getSkillLevel(clearedCount);
+  const rankProgress = rank.next ? Math.max(0, Math.min(100, (clearedCount - rank.threshold) / (rank.next.threshold - rank.threshold) * 100)) : 100;
   const missedModules = [...new Set(progress.attempts.filter(attempt => !attempt.correct).map(attempt => attempt.challengeId))]
     .map(id => ({ module: challenges.find(item => item.id === id), count: progress.attempts.filter(attempt => !attempt.correct && attempt.challengeId === id).length }))
     .filter(item => item.module);
@@ -169,17 +188,20 @@ function App() {
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || 'Could not submit your answer.');
+      const practicePoints = !participating && result.correct && progress.completed.includes(challenge.id)
+        ? Math.max(10, 25 - hintsUsed * 5)
+        : result.points;
       if (participating) {
         setProgress(result.progress);
         setRecommendation(result.recommendation);
       } else {
-        const attempt = { challengeId: challenge.id, topic: challenge.topic, correct: result.correct, points: result.points, hintsUsed: 0 };
+        const attempt = { challengeId: challenge.id, topic: challenge.topic, correct: result.correct, points: practicePoints, hintsUsed };
         const completed = result.correct && !progress.completed.includes(challenge.id) ? [...progress.completed, challenge.id] : progress.completed;
         setProgress(current => ({ ...current, attempts: [...current.attempts, attempt], completed }));
         const next = challenges.find(item => !completed.includes(item.id));
         setRecommendation(next ? { challengeId: next.id, topic: next.topic, message: `Continue with ${next.title}. This practice suggestion is not saved.`, reason: 'practice session only' } : { challengeId: challenge.id, topic: challenge.topic, message: 'You have completed every challenge in this session. You can review any module.', reason: 'practice session only' });
       }
-      setFeedback({ correct: participating ? result.attempt.correct : result.correct, points: participating ? result.attempt.points : result.points, hintsUsed: participating ? result.attempt.hintsUsed ?? 0 : 0, explanation: result.feedback.text, feedbackSource: result.feedback.source });
+      setFeedback({ correct: participating ? result.attempt.correct : result.correct, points: participating ? result.attempt.points : practicePoints, hintsUsed: participating ? result.attempt.hintsUsed ?? 0 : hintsUsed, explanation: result.feedback.text, feedbackSource: result.feedback.source });
     } catch (error) {
       setApiError(`${error.message} Check that the backend is running, then try again.`);
     } finally {
@@ -240,9 +262,16 @@ function App() {
         {apiError && <div className="api-error" role="alert">{apiError}</div>}
         {activeView === 'admin' && account.role === 'admin' ? <AdminPanel /> : activeView === 'evaluation' && (account.role === 'admin' || hasCurrentConsent(account)) ? <EvaluationPanel participant={account.role === 'learner'} /> : <>
         <section className="stats-grid" aria-label="Learning summary">
-          <article className="stat-card"><span className="stat-icon green">◉</span><div><span className="stat-label">MODULES COMPLETED</span><strong>{progress.completed.length} <small>/ {challenges.length}</small></strong></div><span className="stat-note">Keep it going</span></article>
+          <article className="stat-card"><span className="stat-icon green">◉</span><div><span className="stat-label">MISSIONS CLEARED</span><strong>{clearedCount} <small>/ {challenges.length}</small></strong></div><span className="stat-note">Keep it going</span></article>
           <article className="stat-card"><span className="stat-icon gold">✧</span><div><span className="stat-label">ACCURACY</span><strong>{accuracy ?? '—'}<small>%</small></strong></div><span className="stat-note">Across attempts</span></article>
-          <article className="stat-card"><span className="stat-icon blue">↗</span><div><span className="stat-label">CURRENT LEVEL</span><strong>{getSkillLevel(progress.completed.length, challenges.length)}</strong></div><span className="stat-note">Your journey starts here</span></article>
+          <article className="stat-card"><span className="stat-icon blue">↗</span><div><span className="stat-label">CURRENT RANK</span><strong>{rank.name}</strong></div><span className="stat-note">Earned through mission clears</span></article>
+        </section>
+
+        <section className="campaign-progress" aria-label="Campaign progress">
+          <div className="campaign-progress-heading"><div><span className="eyebrow">CYBERWOLF FIELD CAMPAIGN</span><strong>{clearedCount} <small>/ {challenges.length} missions cleared</small></strong></div><span className="rank-pill">{rank.name}</span></div>
+          <div className="campaign-track" role="progressbar" aria-label="Campaign mission completion" aria-valuenow={clearedCount} aria-valuemin="0" aria-valuemax={challenges.length}><span style={{ width: `${challenges.length ? clearedCount / challenges.length * 100 : 0}%` }} /></div>
+          {rank.next && <div className="rank-progress"><span>{rank.next.threshold - clearedCount} mission clear{rank.next.threshold - clearedCount === 1 ? '' : 's'} to {rank.next.name}</span><div><i style={{ width: `${rankProgress}%` }} /></div></div>}
+          <p>{rank.next ? 'First clears award the most XP; hints reduce that reward, and replay clears earn a smaller bonus.' : 'All campaign missions cleared. You are a Pathfinder.'}</p>
         </section>
 
         <section className="content-grid">
@@ -252,16 +281,16 @@ function App() {
               {loading && <p className="load-message">Connecting to the CyberWolf API…</p>}
               {!loading && !challenge && <p className="load-message">No challenges are available. Check the backend server.</p>}
               {challenge && <>
-              <div className="challenge-top"><div><span className="topic-tag">{challenge.topic}</span><h3>{challenge.title}</h3><p className="challenge-desc">{challenge.description}</p></div><span className="difficulty">FOUNDATION · {challenge.duration.toUpperCase()}</span></div>
+              <div className="challenge-top"><div><span className="topic-tag">{challenge.topic}</span><h3>{challenge.title}</h3><p className="challenge-desc">{challenge.description}</p></div><span className="difficulty">MISSION {challenge.missionOrder ?? challenges.findIndex(item => item.id === challenge.id) + 1} OF {challenges.length} · {challenge.duration.toUpperCase()}</span></div>
               <section className="module-briefing" aria-label="Module briefing"><div className="briefing-heading"><span className="briefing-icon">i</span><div><span className="briefing-label">QUICK BRIEFING</span><strong>What you’ll learn</strong></div></div><p className="learning-objective">{challenge.learningObjective}</p><ul>{challenge.briefing?.map(point => <li key={point}>{point}</li>)}</ul></section>
               <div className="scenario">{challenge.scenario}</div>
               <fieldset className="options" disabled={Boolean(feedback) || submitting}><legend>{challenge.question}</legend>{challenge.options.map((option, index) => <button key={option} className={`answer-option${selectedOption === index ? ' selected' : ''}`} type="button" aria-pressed={selectedOption === index} onClick={() => setSelectedOption(index)}><span className="option-key">{String.fromCharCode(65 + index)}</span><span>{option}</span></button>)}</fieldset>
               {!feedback && <div className="challenge-actions challenge-actions-wrap"><div className="action-help"><span className="hint">Choose the response that best protects you.</span>{hintsUsed > 0 && <span className="hint-count">{hintsUsed} hint{hintsUsed === 1 ? '' : 's'} used · fewer points for hinted answers</span>}</div><div className="action-buttons">{hintsUsed < (challenge.hints?.length ?? 0) && <button className="secondary-button hint-button" type="button" disabled={submitting} onClick={() => setHintsUsed(count => count + 1)}>Show hint {hintsUsed + 1}</button>}<button className="primary-button" type="button" disabled={selectedOption === null || submitting} onClick={submitAnswer}>{submitting ? 'Checking…' : 'Check my answer'} <span aria-hidden="true">→</span></button></div></div>}
               {!feedback && hintsUsed > 0 && <div className="hint-reveal" aria-live="polite">{challenge.hints.slice(0, hintsUsed).map((hint, index) => <p key={hint}><span>HINT {index + 1}</span>{hint}</p>)}</div>}
-              {feedback && <><div className={`feedback ${feedback.correct ? 'correct' : 'incorrect'}`} role="status"><strong>{feedback.correct ? `Good call! +${feedback.points} XP${feedback.hintsUsed ? ` · ${feedback.hintsUsed} hint${feedback.hintsUsed === 1 ? '' : 's'} used` : ''}` : `Not quite. +${feedback.points} XP for giving it a try.`}</strong><span className="feedback-source">{feedback.feedbackSource === 'ai' ? 'AI-assisted feedback' : 'Guided feedback'}</span>{feedback.explanation}</div><div className="challenge-actions"><span className="hint">{progress.completed.length} of {challenges.length} modules completed</span><button className="secondary-button" type="button" onClick={continueLearning}>{recommendation?.challengeId === challenge?.id ? 'Review this module ↻' : 'Continue learning →'}</button></div></>}
+              {feedback && <><div className={`feedback ${feedback.correct ? 'correct' : 'incorrect'}`} role="status"><strong>{feedback.correct ? `Good call! +${feedback.points} XP${feedback.hintsUsed ? ` · ${feedback.hintsUsed} hint${feedback.hintsUsed === 1 ? '' : 's'} used` : ''}` : `Not quite. +${feedback.points} XP for giving it a try.`}</strong><span className="feedback-source">{feedback.feedbackSource === 'ai' ? 'AI-assisted feedback' : 'Guided feedback'}</span>{feedback.explanation}</div><div className="challenge-actions"><span className="hint">{clearedCount} of {challenges.length} missions cleared</span><button className="secondary-button" type="button" onClick={continueLearning}>{recommendation?.challengeId === challenge?.id ? 'Review this mission ↻' : 'Continue learning →'}</button></div></>}
               </>}
             </div>
-            {challenges.length > 0 && <div className="challenge-picker"><span className="picker-label">ALL LEARNING MODULES</span>{challenges.map((item, index) => <button className={`picker-item${item.id === challenge?.id ? ' current' : ''}`} key={item.id} onClick={() => chooseChallenge(item)} type="button"><span className="picker-state">{progress.completed.includes(item.id) ? '✓' : String(index + 1).padStart(2, '0')}</span><span>{item.title}</span><small>{item.topic}</small></button>)}</div>}
+            {challenges.length > 0 && <div className="challenge-picker"><span className="picker-label">MISSION BOARD · {challenges.length} SCENARIOS · CLEAR THEM IN ANY ORDER</span>{challenges.map((item, index) => <button className={`picker-item${item.id === challenge?.id ? ' current' : ''}${progress.completed.includes(item.id) ? ' cleared' : ''}`} key={item.id} onClick={() => chooseChallenge(item)} type="button" aria-current={item.id === challenge?.id ? 'step' : undefined}><span className="picker-state">{progress.completed.includes(item.id) ? '✓' : String(item.missionOrder ?? index + 1).padStart(2, '0')}</span><span className="picker-title">{item.title}<small>{item.topic}</small></span><span className="mission-state">{progress.completed.includes(item.id) ? 'CLEARED' : 'READY'}</span></button>)}</div>}
           </div>
           <aside className="recommendation" id="progress"><div className="recommend-icon">✳</div><div className="eyebrow">PERSONALIZED FOR YOU</div><h3>Your next move</h3><p>{recommendation?.message ?? 'Complete a challenge to get a recommendation based on your results.'}</p><div className="recommend-rule"><span className="rule-dot" /><span>{recommendation ? `Rule: ${recommendation.reason}` : 'Recommendations use your recent challenge results.'}</span></div>
             {topicSummary.length > 0 && <div className="insight-panel"><strong className="insight-title">TOPIC MASTERY</strong>{topicSummary.map(topic => <div className="mastery-row" key={topic.topic}><div className="mastery-label"><span>{topic.topic}</span><span>{topic.accuracy}%</span></div><div className="mastery-track"><span style={{ width: `${topic.accuracy}%` }} /></div></div>)}<small>{strongestTopic?.topic} is currently your strongest topic.</small></div>}

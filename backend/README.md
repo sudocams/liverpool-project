@@ -1,8 +1,8 @@
 # CyberWolf API
 
-Express API for five short cybersecurity learning modules, answer evaluation, and learner progress. Each module includes an objective, briefing points, and a scenario challenge. Answer keys remain on the server; public challenge endpoints omit them.
+Express API for 20 authored cybersecurity mission scenarios, answer evaluation, and learner progress. Each mission includes an objective, briefing points, hints, a scenario challenge, and a reviewed explanation. Answer keys remain on the server; public challenge endpoints omit them. On MongoDB startup, missing built-in missions are added without overwriting existing administrator edits.
 
-Modules provide optional hints. Correct answers earn 100 points without hints, reduced by 20 points per hint to a minimum of 40; incorrect attempts earn 10 points. Hint use is recorded with each attempt for learner progress analysis.
+Missions provide optional hints. A first clear earns up to 100 XP, reduced by 20 points per hint to a minimum of 40; wrong attempts earn a small participation award. Replay clears earn less XP than a first clear. Learner ranks are based on unique missions cleared, while badges reward accuracy, hint-free clears, and progress across the campaign.
 
 Challenge feedback uses the fixed guided explanation by default. To enable AI-assisted feedback, configure `AI_API_KEY`, `AI_API_URL`, and `AI_MODEL`. Only the challenge context, learner's selected answer, correctness, and learning objective are sent; no learner ID is sent. Review the provider's privacy, retention, and licensing before enabling it for a study.
 

@@ -1,8 +1,9 @@
 import mongoose from 'mongoose';
 import { challenges } from '../content/challenges.js';
 import { LearningModule } from '../models/LearningModule.js';
+import { ContentMigration } from '../models/ContentMigration.js';
 
-const temporaryModules = new Map(challenges.map(module => [module.id, structuredClone(module)]));
+const temporaryModules = new Map(challenges.map((module, index) => [module.id, { ...structuredClone(module), missionOrder: index + 1 }]));
 
 export function validateModule(module) {
   if (!module || typeof module !== 'object' || Array.isArray(module)) return 'Module must be a JSON object.';
@@ -25,10 +26,10 @@ function plainModule(document) {
 
 export async function listModules() {
   if (mongoose.connection.readyState === 1) {
-    let modules = await LearningModule.find({}).sort({ createdAt: 1 }).lean();
+    let modules = await LearningModule.find({}).sort({ missionOrder: 1, createdAt: 1 }).lean();
     if (modules.length === 0) {
       await LearningModule.insertMany(challenges);
-      modules = await LearningModule.find({}).sort({ createdAt: 1 }).lean();
+      modules = await LearningModule.find({}).sort({ missionOrder: 1, createdAt: 1 }).lean();
     }
     return modules;
   }
@@ -64,5 +65,12 @@ export async function deleteModule(id) {
 
 export async function seedModules() {
   if (mongoose.connection.readyState !== 1) return;
-  if (await LearningModule.countDocuments() === 0) await LearningModule.insertMany(challenges);
+  const migrationKey = 'cyberwolf-missions-v1';
+  if (await ContentMigration.exists({ key: migrationKey })) return;
+  const operations = challenges.flatMap((module, index) => [
+    { updateOne: { filter: { id: module.id }, update: { $setOnInsert: { ...module, missionOrder: index + 1 } }, upsert: true } },
+    { updateOne: { filter: { id: module.id, missionOrder: { $exists: false } }, update: { $set: { missionOrder: index + 1 } } } },
+  ]);
+  await LearningModule.bulkWrite(operations);
+  await ContentMigration.updateOne({ key: migrationKey }, { $setOnInsert: { key: migrationKey } }, { upsert: true });
 }

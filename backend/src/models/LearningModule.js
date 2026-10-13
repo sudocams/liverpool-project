@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 
 const learningModuleSchema = new mongoose.Schema({
   id: { type: String, required: true, unique: true, index: true },
+  missionOrder: { type: Number, default: 9999, index: true },
   topic: { type: String, required: true },
   duration: { type: String, required: true },
   title: { type: String, required: true },
