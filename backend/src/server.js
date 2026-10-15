@@ -4,6 +4,7 @@ import cors from 'cors';
 import express from 'express';
 import mongoose from 'mongoose';
 import { getAssessment, isAssessmentAnswerValid, scoreAssessment } from './content/assessments.js';
+import { getScenarioRemediation } from './content/remediation.js';
 import { getProgress, saveProgress, deleteProgress, listProgressForAccounts, pruneExpiredProgress, startActivitySession, heartbeatActivitySession, endActivitySession } from './services/progressStore.js';
 import { recommendNextActivity } from './services/adaptiveEngine.js';
 import { learningPaths, pathChallengeIds, completedLearningPaths, learningPathProgress } from './content/learningPaths.js';
@@ -18,20 +19,50 @@ const port = Number(process.env.PORT) || 4000;
 const allowedOrigin = process.env.FRONTEND_ORIGIN || 'http://localhost:5173';
 const studyInfoVersion = process.env.STUDY_INFO_VERSION || 'draft-5';
 const assessmentMaxAttempts = Math.max(1, Number.parseInt(process.env.ASSESSMENT_MAX_ATTEMPTS || '3', 10) || 3);
+const retentionDelayDays = Math.max(14, Number.parseInt(process.env.RETENTION_TEST_DELAY_DAYS || '21', 10) || 21);
 const dataRetentionDays = Math.max(0, Number.parseInt(process.env.DATA_RETENTION_DAYS || '0', 10) || 0);
 
 function publicChallenge(challenge) {
   const { answerIndex, ...publicContent } = challenge;
+  const publicRemediation = Object.fromEntries(Object.entries(getScenarioRemediation(challenge)).filter(([key]) => key !== 'answerIndex'));
   const options = [...(challenge.options ?? [])];
   for (let index = options.length - 1; index > 0; index -= 1) {
     const swap = randomInt(index + 1);
     [options[index], options[swap]] = [options[swap], options[index]];
   }
-  return { ...publicContent, options };
+  return { ...publicContent, options, remediation: publicRemediation };
 }
 
 function durationSeconds(value) {
   return Number.isInteger(value) && value >= 0 ? Math.min(value, 7200) : 0;
+}
+
+function hasCompletedAssessment(progress, phase) {
+  return (progress.assessments ?? []).some(assessment => assessment.phase === phase);
+}
+
+function scenarioCompletionTime(progress, modules) {
+  const firstClearTimes = modules.map(module => (progress.attempts ?? [])
+    .filter(attempt => attempt.challengeId === module.id && attempt.correct)
+    .map(attempt => new Date(attempt.at).getTime())
+    .filter(Number.isFinite)
+    .sort((first, second) => first - second)[0]);
+  if (!modules.length || firstClearTimes.some(time => time === undefined)) return null;
+  return Math.max(...firstClearTimes);
+}
+
+function postTestCompletedAfterScenarios(progress, modules) {
+  const allScenariosCompletedAt = scenarioCompletionTime(progress, modules);
+  return allScenariosCompletedAt !== null && (progress.assessments ?? []).some(assessment => assessment.phase === 'post' && new Date(assessment.at).getTime() >= allScenariosCompletedAt);
+}
+
+async function learnerChallengeGateError(progress) {
+  if (!hasCompletedAssessment(progress, 'pre')) return 'Complete the pre-test before attempting any learning scenarios.';
+  const modules = await listModules();
+  if (modules.length && modules.every(module => progress.completed.includes(module.id)) && !postTestCompletedAfterScenarios(progress, modules)) {
+    return 'You have completed every scenario. Complete the post-test to finish the learning path.';
+  }
+  return null;
 }
 
 app.use(cors({ origin: allowedOrigin, credentials: true }));
@@ -203,20 +234,54 @@ app.get('/api/recommendations', requireAuth, async (req, res, next) => {
   } catch (error) { return next(error); }
 });
 
-app.get('/api/assessments/:phase', (req, res) => {
+app.get('/api/assessments/:phase', requireAuth, async (req, res, next) => {
+  try {
+  if (!['pre', 'post', 'retention', 'transfer'].includes(req.params.phase)) return res.status(404).json({ error: 'Unknown assessment phase.' });
+  const phase = req.params.phase;
+  const progress = await getProgress(req.account.accountId);
+  const latestPost = (progress.assessments ?? []).filter(item => item.phase === 'post').sort((a, b) => new Date(b.at) - new Date(a.at))[0];
+  if (phase === 'post') {
+    const modules = await listModules();
+    if (!hasCompletedAssessment(progress, 'pre') || modules.some(module => !progress.completed.includes(module.id))) return res.status(409).json({ error: 'Complete the pre-test and every learning scenario before taking the post-test.' });
+  }
+  if (phase === 'transfer' && !latestPost) return res.status(409).json({ error: 'Complete the post-test before the transfer assessment.' });
+  if (phase === 'retention') {
+    if (!latestPost) return res.status(409).json({ error: 'Complete the post-test before the delayed retention assessment.' });
+    const eligibleAt = new Date(new Date(latestPost.at).getTime() + retentionDelayDays * 86400000);
+    if (Date.now() < eligibleAt.getTime()) return res.status(423).json({ error: 'The delayed retention assessment is not available yet.', eligibleAt: eligibleAt.toISOString(), delayDays: retentionDelayDays });
+  }
   const questions = getAssessment(req.params.phase);
   if (!questions) return res.status(404).json({ error: 'Assessment phase must be pre or post.' });
-  return res.json({ phase: req.params.phase, questions, maxAttempts: assessmentMaxAttempts });
+  return res.json({ phase, questions, maxAttempts: assessmentMaxAttempts, delayDays: retentionDelayDays });
+  } catch (error) { return next(error); }
 });
 
-app.post('/api/assessments', requireAuth, requireStudyConsent, async (req, res, next) => {
+app.post('/api/assessments', requireAuth, async (req, res, next) => {
   try {
     const { phase, answers } = req.body ?? {};
+    if (!['pre', 'post', 'retention', 'transfer'].includes(phase)) return res.status(400).json({ error: 'Choose a valid assessment phase.' });
     if (!isAssessmentAnswerValid(phase, answers)) return res.status(400).json({ error: 'Submit one valid answer for each assessment topic.' });
     const result = scoreAssessment(phase, answers);
     const current = await getProgress(req.account.accountId);
+    let postEligibilityTime = null;
+    if (phase === 'post') {
+      if (!hasCompletedAssessment(current, 'pre')) return res.status(409).json({ error: 'Complete the pre-test before the post-test.' });
+      const modules = await listModules();
+      if (modules.some(module => !current.completed.includes(module.id))) return res.status(409).json({ error: 'Complete all learning scenarios before taking the post-test.' });
+      postEligibilityTime = scenarioCompletionTime(current, modules);
+      if (postEligibilityTime === null) return res.status(409).json({ error: 'Finish each scenario successfully before taking the post-test.' });
+    }
+    const latestPost = (current.assessments ?? []).filter(item => item.phase === 'post').sort((a, b) => new Date(b.at) - new Date(a.at))[0];
+    if (phase === 'transfer' && !latestPost) return res.status(409).json({ error: 'Complete the post-test before the transfer assessment.' });
+    if (phase === 'retention') {
+      if (!latestPost) return res.status(409).json({ error: 'Complete the post-test before the delayed retention assessment.' });
+      const eligibleAt = new Date(new Date(latestPost.at).getTime() + retentionDelayDays * 86400000);
+      if (Date.now() < eligibleAt.getTime()) return res.status(423).json({ error: 'The delayed retention assessment is not available yet.', eligibleAt: eligibleAt.toISOString(), delayDays: retentionDelayDays });
+    }
     const consentedAt = req.account.researchConsent?.acceptedAt ? new Date(req.account.researchConsent.acceptedAt).getTime() : 0;
-    const phaseAttempts = (current.assessments ?? []).filter(item => item.phase === phase && (req.account.role === 'admin' || new Date(item.at).getTime() >= consentedAt)).length;
+    const phaseAttempts = (current.assessments ?? []).filter(item => item.phase === phase
+      && (req.account.role === 'admin' || new Date(item.at).getTime() >= consentedAt)
+      && (phase !== 'post' || new Date(item.at).getTime() >= postEligibilityTime)).length;
     if (phaseAttempts >= assessmentMaxAttempts) return res.status(409).json({ error: `You have reached the ${assessmentMaxAttempts}-attempt limit for the ${phase}-assessment.` });
     const record = {
       phase,
@@ -298,6 +363,7 @@ app.get('/api/research/summary', requireRole('admin'), async (_req, res, next) =
         achievements: (record.achievements ?? []).filter(item => new Date(item.earnedAt).getTime() >= startsAt),
         rankHistory: (record.rankHistory ?? []).filter(item => new Date(item.reachedAt).getTime() >= startsAt),
         currentRank: record.currentRank ?? 'Rookie',
+        loginEvents: (participant.loginEvents ?? []).filter(at => new Date(at).getTime() >= startsAt),
         completed: [...new Set(attempts.filter(item => item.correct).map(item => item.challengeId))],
         researchFeedback: record.researchFeedback && afterConsent(record.researchFeedback) ? record.researchFeedback : null,
       };
@@ -315,6 +381,10 @@ app.get('/api/research/summary', requireRole('admin'), async (_req, res, next) =
     const toPercent = item => item ? item.score / item.total * 100 : null;
     const challengeCatalog = await listModules();
     const learningModuleCatalog = learningPaths.flatMap(path => path.modules.map(module => ({ ...module, pathId: path.id, pathTitle: path.title })));
+    const groupedChallengeIds = new Set(learningModuleCatalog.flatMap(module => module.challengeIds));
+    learningModuleCatalog.push(...challengeCatalog.filter(module => !groupedChallengeIds.has(module.id)).map(module => ({
+      id: `standalone-${module.id}`, title: module.title, pathTitle: 'Standalone modules', challengeIds: [module.id],
+    })));
     const learnerAnalytics = learners.map((learner, index) => {
       const participant = participants[index];
       const latestByPhase = {};
@@ -330,6 +400,9 @@ app.get('/api/research/summary', requireRole('admin'), async (_req, res, next) =
         + learner.assessments.reduce((sum, assessment) => sum + (assessment.durationSeconds ?? 0), 0);
       const sessionSeconds = (learner.activitySessions ?? []).reduce((sum, session) => sum + (session.activeSeconds ?? 0), 0);
       const secondsLearning = learner.activitySessions?.length ? sessionSeconds : estimatedSubmissionSeconds;
+      const sessionDurations = (learner.activitySessions ?? []).map(session => session.activeSeconds ?? 0);
+      const loginEvents = (learner.loginEvents ?? []).map(at => new Date(at)).filter(date => Number.isFinite(date.getTime())).sort((a, b) => a - b);
+      const recentLoginEvents = loginEvents.filter(date => Date.now() - date.getTime() <= 30 * 24 * 60 * 60 * 1000);
       const aiFeedbackCount = learner.attempts.filter(attempt => attempt.feedbackSource === 'ai').length;
       const guidedFeedbackCount = learner.attempts.filter(attempt => attempt.feedbackSource === 'guided').length;
       const feedbackTrackedCount = aiFeedbackCount + guidedFeedbackCount;
@@ -337,11 +410,23 @@ app.get('/api/research/summary', requireRole('admin'), async (_req, res, next) =
         + learner.assessments.filter(assessment => Number.isInteger(assessment.durationSeconds)).length);
       const progressionCounts = learner.progression.reduce((counts, event) => ({ ...counts, [event.rule]: (counts[event.rule] ?? 0) + 1 }), {});
       const percentCompleted = challengeCatalog.length ? Math.round(completedIds.size / challengeCatalog.length * 100) : 0;
-      const topicAssessmentProgress = [...new Set([...(latestByPhase.pre?.answers ?? []), ...(latestByPhase.post?.answers ?? [])].map(answer => answer.topic))].map(topic => {
-        const preAnswer = latestByPhase.pre?.answers?.find(answer => answer.topic === topic);
-        const postAnswer = latestByPhase.post?.answers?.find(answer => answer.topic === topic);
-        return { topic, preCorrect: preAnswer?.correct ?? null, postCorrect: postAnswer?.correct ?? null, improvementPoints: preAnswer && postAnswer ? (Number(postAnswer.correct) - Number(preAnswer.correct)) * 100 : null };
+      const topicAssessmentProgress = [...new Set(Object.values(latestByPhase).flatMap(assessment => assessment?.answers?.map(answer => answer.topic) ?? []))].map(topic => {
+        const scores = Object.fromEntries(['pre', 'post', 'retention', 'transfer'].map(phase => {
+          const answers = latestByPhase[phase]?.answers?.filter(answer => answer.topic === topic) ?? [];
+          return [phase, answers.length ? Math.round(answers.filter(answer => answer.correct).length / answers.length * 100) : null];
+        }));
+        return { topic, ...scores, preCorrect: scores.pre === null ? null : scores.pre === 100, postCorrect: scores.post === null ? null : scores.post === 100, improvementPoints: scores.pre === null || scores.post === null ? null : scores.post - scores.pre };
       });
+      const postTime = latestByPhase.post ? new Date(latestByPhase.post.at).getTime() : Infinity;
+      const sessionsThroughPost = (learner.activitySessions ?? []).filter(session => new Date(session.startedAt).getTime() <= postTime);
+      const timedSubmissionsThroughPost = learner.attempts.filter(attempt => new Date(attempt.at).getTime() <= postTime).reduce((sum, attempt) => sum + (attempt.durationSeconds ?? 0), 0)
+        + learner.assessments.filter(assessment => ['pre', 'post'].includes(assessment.phase) && new Date(assessment.at).getTime() <= postTime).reduce((sum, assessment) => sum + (assessment.durationSeconds ?? 0), 0);
+      const learningSecondsThroughPost = sessionsThroughPost.length
+        ? sessionsThroughPost.reduce((sum, session) => sum + (session.activeSeconds ?? 0), 0)
+        : timedSubmissionsThroughPost;
+      const scoreGainPerHour = learningSecondsThroughPost > 0 && latestByPhase.pre && latestByPhase.post
+        ? Math.round(((latestByPhase.post.score / latestByPhase.post.total - latestByPhase.pre.score / latestByPhase.pre.total) * 100) / (learningSecondsThroughPost / 3600) * 10) / 10
+        : null;
       const weekKey = value => {
         const date = new Date(value);
         date.setUTCHours(0, 0, 0, 0);
@@ -372,7 +457,10 @@ app.get('/api/research/summary', requireRole('admin'), async (_req, res, next) =
         assessments: {
           pre: latestByPhase.pre ? { score: latestByPhase.pre.score, total: latestByPhase.pre.total, percent: Math.round(toPercent(latestByPhase.pre)), at: latestByPhase.pre.at } : null,
           post: latestByPhase.post ? { score: latestByPhase.post.score, total: latestByPhase.post.total, percent: Math.round(toPercent(latestByPhase.post)), at: latestByPhase.post.at } : null,
+          retention: latestByPhase.retention ? { score: latestByPhase.retention.score, total: latestByPhase.retention.total, percent: Math.round(toPercent(latestByPhase.retention)), at: latestByPhase.retention.at } : null,
+          transfer: latestByPhase.transfer ? { score: latestByPhase.transfer.score, total: latestByPhase.transfer.total, percent: Math.round(toPercent(latestByPhase.transfer)), at: latestByPhase.transfer.at } : null,
           improvementPoints: latestByPhase.pre && latestByPhase.post ? Math.round((toPercent(latestByPhase.post) - toPercent(latestByPhase.pre)) * 10) / 10 : null,
+          scoreGainPerHour,
           topicProgress: topicAssessmentProgress,
         },
         challengeCompletion: { completed: completedIds.size, total: challengeCatalog.length, rate: percentCompleted },
@@ -381,7 +469,24 @@ app.get('/api/research/summary', requireRole('admin'), async (_req, res, next) =
           total: learningModuleCatalog.length,
           rate: learningModuleCatalog.length ? Math.round(learningModuleCatalog.filter(module => module.challengeIds.every(id => completedIds.has(id))).length / learningModuleCatalog.length * 100) : 0,
         },
-        activity: { attempts: totalAttempts, accuracy: totalAttempts ? Math.round(correctAttempts / totalAttempts * 100) : null, timeSpentSeconds: secondsLearning, timeTrackedActivities: durationTrackedCount, activeSessions: learner.activitySessions?.length ?? 0 },
+        activity: {
+          attempts: totalAttempts, accuracy: totalAttempts ? Math.round(correctAttempts / totalAttempts * 100) : null,
+          timeSpentSeconds: secondsLearning, timeTrackedActivities: durationTrackedCount, activeSessions: learner.activitySessions?.length ?? 0,
+          sessionDurationSeconds: sessionSeconds, averageSessionSeconds: sessionDurations.length ? Math.round(sessionSeconds / sessionDurations.length) : null,
+          loginFrequency: {
+            total: loginEvents.length,
+            activeDays: new Set(loginEvents.map(date => date.toISOString().slice(0, 10))).size,
+            perWeek: Math.round(recentLoginEvents.length / 30 * 7 * 10) / 10,
+            lastLoginAt: loginEvents.at(-1)?.toISOString() ?? null,
+          },
+        },
+        gamification: {
+          pointsEarned: learner.attempts.reduce((sum, attempt) => sum + (attempt.points ?? 0), 0),
+          hintsUsed: learner.attempts.reduce((sum, attempt) => sum + (attempt.hintsUsed ?? 0), 0),
+          achievementsEarned: learner.achievements.length,
+          rankUps: learner.rankHistory.length,
+          progressionDecisions: learner.progression.length,
+        },
         aiFeedback: { used: aiFeedbackCount, guided: guidedFeedbackCount, untracked: totalAttempts - feedbackTrackedCount, trackedAttempts: feedbackTrackedCount, usageRate: feedbackTrackedCount ? Math.round(aiFeedbackCount / feedbackTrackedCount * 100) : null },
         adaptiveProgression: { decisions: learner.progression.length, rules: progressionCounts, history: learner.progression },
         learningPaths: pathProgress,
@@ -395,20 +500,25 @@ app.get('/api/research/summary', requireRole('admin'), async (_req, res, next) =
           const moduleChallenges = module.challengeIds.map(id => challengeCatalog.find(challenge => challenge.id === id)).filter(Boolean);
           return {
             id: module.id, title: module.title, pathTitle: module.pathTitle, completed: moduleChallenges.length > 0 && moduleChallenges.every(challenge => completedIds.has(challenge.id)),
+            completionRate: moduleChallenges.length ? Math.round(moduleChallenges.filter(challenge => completedIds.has(challenge.id)).length / moduleChallenges.length * 100) : 0,
             challengeCount: moduleChallenges.length, attempts: moduleAttempts.length, accuracy: moduleAttempts.length ? Math.round(wins / moduleAttempts.length * 100) : null,
             timeSpentSeconds: moduleAttempts.reduce((sum, attempt) => sum + (attempt.durationSeconds ?? 0), 0),
             timeTrackedAttempts: moduleAttempts.filter(attempt => Number.isInteger(attempt.durationSeconds)).length,
             challenges: moduleChallenges.map(challenge => {
               const attempts = moduleAttempts.filter(attempt => attempt.challengeId === challenge.id);
               const correct = attempts.filter(attempt => attempt.correct).length;
-              return { id: challenge.id, title: challenge.title, completed: completedIds.has(challenge.id), attempts: attempts.length, accuracy: attempts.length ? Math.round(correct / attempts.length * 100) : null };
+              const timedAttempts = attempts.filter(attempt => Number.isInteger(attempt.durationSeconds));
+              const timeSpentSeconds = timedAttempts.reduce((sum, attempt) => sum + attempt.durationSeconds, 0);
+              return { id: challenge.id, title: challenge.title, completed: completedIds.has(challenge.id), completionRate: completedIds.has(challenge.id) ? 100 : 0, attempts: attempts.length, accuracy: attempts.length ? Math.round(correct / attempts.length * 100) : null, timeSpentSeconds, timeTrackedAttempts: timedAttempts.length, averageDurationSeconds: timedAttempts.length ? Math.round(timeSpentSeconds / timedAttempts.length) : null };
             }),
           };
         }),
         challenges: challengeCatalog.map(challenge => {
           const attempts = learner.attempts.filter(attempt => attempt.challengeId === challenge.id);
           const correct = attempts.filter(attempt => attempt.correct).length;
-          return { id: challenge.id, title: challenge.title, completed: completedIds.has(challenge.id), attempts: attempts.length, accuracy: attempts.length ? Math.round(correct / attempts.length * 100) : null };
+          const timedAttempts = attempts.filter(attempt => Number.isInteger(attempt.durationSeconds));
+          const timeSpentSeconds = timedAttempts.reduce((sum, attempt) => sum + attempt.durationSeconds, 0);
+          return { id: challenge.id, title: challenge.title, completed: completedIds.has(challenge.id), completionRate: completedIds.has(challenge.id) ? 100 : 0, attempts: attempts.length, accuracy: attempts.length ? Math.round(correct / attempts.length * 100) : null, timeSpentSeconds, timeTrackedAttempts: timedAttempts.length, averageDurationSeconds: timedAttempts.length ? Math.round(timeSpentSeconds / timedAttempts.length) : null };
         }),
       };
     });
@@ -428,8 +538,12 @@ app.get('/api/research/summary', requireRole('admin'), async (_req, res, next) =
       }
     }
     const topicGains = [...new Set(learnerAnalytics.flatMap(learner => learner.assessments.topicProgress.map(item => item.topic)))].map(topic => {
-      const values = learnerAnalytics.map(learner => learner.assessments.topicProgress.find(item => item.topic === topic)?.improvementPoints).filter(Number.isFinite);
-      return { topic, matchedLearners: values.length, meanImprovementPoints: values.length ? mean(values) : null };
+      const scoreAt = phase => learnerAnalytics.map(learner => learner.assessments.topicProgress.find(item => item.topic === topic)?.[phase]).filter(Number.isFinite);
+      const pre = scoreAt('pre'); const post = scoreAt('post'); const retention = scoreAt('retention'); const transfer = scoreAt('transfer');
+      return {
+        topic, matchedLearners: Math.min(pre.length, post.length), meanPrePercent: mean(pre), meanPostPercent: mean(post), meanRetentionPercent: mean(retention), meanTransferPercent: mean(transfer),
+        meanImprovementPoints: pre.length && post.length ? mean(learnerAnalytics.map(learner => { const item = learner.assessments.topicProgress.find(entry => entry.topic === topic); return item?.improvementPoints; }).filter(Number.isFinite)) : null,
+      };
     });
     return res.json({
       consentedParticipantCount: participants.length,
@@ -439,6 +553,11 @@ app.get('/api/research/summary', requireRole('admin'), async (_req, res, next) =
       meanPrePercent: mean(pairs.filter(pair => pair.pre).map(pair => toPercent(pair.pre))),
       meanPostPercent: mean(pairs.filter(pair => pair.post).map(pair => toPercent(pair.post))),
       meanChangePoints: mean(matched.map(pair => toPercent(pair.post) - toPercent(pair.pre))),
+      learnersWithRetention: learners.filter(learner => learner.assessments.some(item => item.phase === 'retention')).length,
+      meanRetentionPercent: mean(learnerAnalytics.map(learner => learner.assessments.retention?.percent).filter(Number.isFinite)),
+      learnersWithTransfer: learners.filter(learner => learner.assessments.some(item => item.phase === 'transfer')).length,
+      meanTransferPercent: mean(learnerAnalytics.map(learner => learner.assessments.transfer?.percent).filter(Number.isFinite)),
+      meanScoreGainPerHour: mean(learnerAnalytics.map(learner => learner.assessments.scoreGainPerHour).filter(Number.isFinite)),
       meanModulesCompleted: mean(learnerAnalytics.map(learner => learner.moduleCompletion.completed)),
       meanModuleCompletionRate: mean(learnerAnalytics.map(learner => learner.moduleCompletion.rate)),
       meanChallengeCompletionRate: mean(learnerAnalytics.map(learner => learner.challengeCompletion.rate)),
@@ -489,11 +608,16 @@ app.post('/api/attempts', requireAuth, requireStudyConsent, async (req, res, nex
     if (hintsUsed > (challenge.hints?.length ?? 0)) return res.status(400).json({ error: 'hintsUsed is out of range.' });
 
     const current = await getProgress(req.account.accountId);
+    const gateError = await learnerChallengeGateError(current);
+    if (gateError) return res.status(409).json({ error: gateError });
     const owningPath = learningPaths.find(path => path.modules.some(module => module.challengeIds.includes(challengeId)));
     const completedPathIds = new Set(completedLearningPaths(current.completed));
     if (owningPath && owningPath.prerequisites.some(id => !completedPathIds.has(id))) return res.status(409).json({ error: 'Complete the prerequisite learning path before starting this challenge.' });
     const owningModuleIndex = owningPath?.modules.findIndex(module => module.challengeIds.includes(challengeId)) ?? -1;
     if (owningModuleIndex > 0 && owningPath.modules.slice(0, owningModuleIndex).some(module => !module.challengeIds.every(id => current.completed.includes(id)))) return res.status(409).json({ error: 'Complete the earlier modules in this learning path before starting this challenge.' });
+    const owningModule = owningPath?.modules[owningModuleIndex];
+    const scenarioIndex = owningModule?.challengeIds.indexOf(challengeId) ?? -1;
+    if (!current.completed.includes(challengeId) && scenarioIndex > 0 && owningModule.challengeIds.slice(0, scenarioIndex).some(id => !current.completed.includes(id))) return res.status(409).json({ error: 'Complete the earlier scenarios in this module before starting this one.' });
     const correct = selectedAnswer === challenge.options[challenge.answerIndex];
     const firstClear = correct && !current.completed.includes(challengeId);
     const points = correct
@@ -528,11 +652,16 @@ app.post('/api/practice/answer', requireAuth, async (req, res, next) => {
     if (!challenge.options.includes(selectedAnswer)) return res.status(400).json({ error: 'The selected answer is not valid for this challenge.' });
     if (hintsUsed > (challenge.hints?.length ?? 0)) return res.status(400).json({ error: 'hintsUsed is out of range.' });
     const current = await getProgress(req.account.accountId);
+    const gateError = await learnerChallengeGateError(current);
+    if (gateError) return res.status(409).json({ error: gateError });
     const owningPath = learningPaths.find(path => path.modules.some(module => module.challengeIds.includes(challengeId)));
     const completedPathIds = new Set(completedLearningPaths(current.completed));
     if (owningPath && owningPath.prerequisites.some(id => !completedPathIds.has(id))) return res.status(409).json({ error: 'Complete the prerequisite learning path before starting this challenge.' });
     const owningModuleIndex = owningPath?.modules.findIndex(module => module.challengeIds.includes(challengeId)) ?? -1;
     if (owningModuleIndex > 0 && owningPath.modules.slice(0, owningModuleIndex).some(module => !module.challengeIds.every(id => current.completed.includes(id)))) return res.status(409).json({ error: 'Complete the earlier modules in this learning path before starting this challenge.' });
+    const owningModule = owningPath?.modules[owningModuleIndex];
+    const scenarioIndex = owningModule?.challengeIds.indexOf(challengeId) ?? -1;
+    if (!current.completed.includes(challengeId) && scenarioIndex > 0 && owningModule.challengeIds.slice(0, scenarioIndex).some(id => !current.completed.includes(id))) return res.status(409).json({ error: 'Complete the earlier scenarios in this module before starting this one.' });
     const correct = selectedAnswer === challenge.options[challenge.answerIndex];
     const firstClear = correct && !current.completed.includes(challengeId);
     const points = correct ? firstClear ? Math.max(40, 100 - hintsUsed * 20) : Math.max(10, 25 - hintsUsed * 5) : 5;
@@ -546,6 +675,52 @@ app.post('/api/practice/answer', requireAuth, async (req, res, next) => {
     progress = updateGamification(progress, modules, new Date(attempt.at), previousCompletedCount);
     await saveProgress(req.account.accountId, progress);
     return res.json({ correct, points, feedback: { text: challenge.explanation, source: 'guided' }, progress, recommendation });
+  } catch (error) { return next(error); }
+});
+
+app.post('/api/challenges/:challengeId/remediation-answer', requireAuth, async (req, res, next) => {
+  try {
+    const { challengeId } = req.params;
+    const { selectedAnswer } = req.body ?? {};
+    if (typeof selectedAnswer !== 'string') return res.status(400).json({ error: 'Select an answer for the follow-up question.' });
+    const challenge = await getModule(challengeId);
+    if (!challenge) return res.status(404).json({ error: 'Challenge not found.' });
+    const remediation = getScenarioRemediation(challenge);
+    if (!remediation.options.includes(selectedAnswer)) return res.status(400).json({ error: 'The selected follow-up answer is not valid.' });
+
+    const current = await getProgress(req.account.accountId);
+    const gateError = await learnerChallengeGateError(current);
+    if (gateError) return res.status(409).json({ error: gateError });
+    if (current.completed.includes(challengeId)) return res.status(409).json({ error: 'This scenario has already been completed.' });
+    if (!(current.attempts ?? []).some(attempt => attempt.challengeId === challengeId && !attempt.correct)) return res.status(409).json({ error: 'Answer the scenario question incorrectly before its learning follow-up.' });
+    const owningPath = learningPaths.find(path => path.modules.some(module => module.challengeIds.includes(challengeId)));
+    const completedPathIds = new Set(completedLearningPaths(current.completed));
+    if (owningPath?.prerequisites.some(id => !completedPathIds.has(id))) return res.status(409).json({ error: 'Complete the prerequisite learning path before starting this challenge.' });
+    const owningModuleIndex = owningPath?.modules.findIndex(module => module.challengeIds.includes(challengeId)) ?? -1;
+    if (owningModuleIndex > 0 && owningPath.modules.slice(0, owningModuleIndex).some(module => !module.challengeIds.every(id => current.completed.includes(id)))) return res.status(409).json({ error: 'Complete the earlier modules in this learning path before starting this challenge.' });
+    const owningModule = owningPath?.modules[owningModuleIndex];
+    const scenarioIndex = owningModule?.challengeIds.indexOf(challengeId) ?? -1;
+    if (scenarioIndex > 0 && owningModule.challengeIds.slice(0, scenarioIndex).some(id => !current.completed.includes(id))) return res.status(409).json({ error: 'Complete the earlier scenarios in this module before starting this one.' });
+
+    const correct = selectedAnswer === remediation.options[remediation.answerIndex];
+    const points = correct ? 60 : 0;
+    const attempt = { challengeId, topic: challenge.topic, correct, points, hintsUsed: 0, durationSeconds: durationSeconds(req.body?.durationSeconds), feedbackSource: 'guided', at: new Date().toISOString() };
+    const previousCompletedCount = current.completed.length;
+    let progress = {
+      ...current,
+      attempts: [...(current.attempts ?? []), attempt],
+      completed: correct ? [...current.completed, challengeId] : current.completed,
+    };
+    progress.completedPaths = completedLearningPaths(progress.completed);
+    const modules = await listModules();
+    const recommendation = recommendNextActivity(progress, modules, learningPaths);
+    progress.progression = [...(progress.progression ?? []), { rule: recommendation.rule, reason: recommendation.reason, recommendedChallengeId: recommendation.challengeId, at: attempt.at }];
+    progress = updateGamification(progress, modules, new Date(attempt.at), previousCompletedCount);
+    await saveProgress(req.account.accountId, progress);
+    return res.json({
+      correct, points, attempt, progress, recommendation,
+      feedback: { text: correct ? remediation.explanation : `Review the lesson card and try again. ${remediation.explanation}`, source: 'guided' },
+    });
   } catch (error) { return next(error); }
 });
 

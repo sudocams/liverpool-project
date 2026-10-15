@@ -89,6 +89,18 @@ export async function authenticateUser(handle, password) {
   const supplied = Buffer.from(await scrypt(password, user.passwordSalt, 64));
   const expected = Buffer.from(user.passwordHash, 'hex');
   if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) return null;
+  const studyVersion = process.env.STUDY_INFO_VERSION || 'draft-5';
+  if (user.role === 'learner' && user.researchConsent?.acceptedAt && user.researchConsent.version === studyVersion) {
+    try {
+      const loginAt = new Date();
+      if (User.db.readyState === 1) {
+        await User.updateOne({ _id: user._id }, { $push: { loginEvents: { $each: [loginAt], $slice: -500 } } });
+      } else {
+        user.loginEvents = [...(user.loginEvents ?? []), loginAt.toISOString()].slice(-500);
+        await saveLocalMap('users.json', temporaryUsers);
+      }
+    } catch { /* Keep authentication available if analytics storage is temporarily unavailable. */ }
+  }
   return { id: user._id?.toString() ?? user.id, handle: user.handle, username: user.username, role: user.role, credentialsConfigured: user.credentialsConfigured === true, mustChangePassword: user.mustChangePassword === true, researchConsent: user.researchConsent };
 }
 
@@ -244,22 +256,23 @@ export async function setResearchConsent(accountId, version) {
 
 export async function clearResearchConsent(accountId) {
   if (User.db.readyState === 1) {
-    await User.findByIdAndUpdate(accountId, { $set: { researchConsent: { version: null, acceptedAt: null } } });
+    await User.findByIdAndUpdate(accountId, { $set: { researchConsent: { version: null, acceptedAt: null }, loginEvents: [] } });
     return;
   }
   await ensureTemporaryUsers();
   const user = [...temporaryUsers.values()].find(item => item.id === accountId);
   if (user) {
     user.researchConsent = { version: null, acceptedAt: null };
+    user.loginEvents = [];
     await saveLocalMap('users.json', temporaryUsers);
   }
 }
 
 export async function listResearchConsentedParticipants() {
   if (User.db.readyState === 1) {
-    const users = await User.find({ role: 'learner', 'researchConsent.acceptedAt': { $ne: null } }, { _id: 1, handle: 1, 'researchConsent.acceptedAt': 1 }).lean();
-    return users.map(user => ({ id: user._id.toString(), handle: user.handle, acceptedAt: user.researchConsent.acceptedAt }));
+    const users = await User.find({ role: 'learner', 'researchConsent.acceptedAt': { $ne: null } }, { _id: 1, handle: 1, 'researchConsent.acceptedAt': 1, loginEvents: 1 }).lean();
+    return users.map(user => ({ id: user._id.toString(), handle: user.handle, acceptedAt: user.researchConsent.acceptedAt, loginEvents: user.loginEvents ?? [] }));
   }
   await ensureTemporaryUsers();
-  return [...temporaryUsers.values()].filter(user => user.role === 'learner' && user.researchConsent?.acceptedAt).map(user => ({ id: user.id, handle: user.handle, acceptedAt: user.researchConsent.acceptedAt }));
+  return [...temporaryUsers.values()].filter(user => user.role === 'learner' && user.researchConsent?.acceptedAt).map(user => ({ id: user.id, handle: user.handle, acceptedAt: user.researchConsent.acceptedAt, loginEvents: user.loginEvents ?? [] }));
 }

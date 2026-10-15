@@ -2,6 +2,10 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import EvaluationPanel from './EvaluationPanel.jsx';
 import AuthScreen from './AuthScreen.jsx';
 import AdminPanel from './AdminPanel.jsx';
+import AdminAnalytics from './AdminAnalytics.jsx';
+import AdminModules from './AdminModules.jsx';
+import ActivityAnalytics from './ActivityAnalytics.jsx';
+import ResearchOutcomes from './ResearchOutcomes.jsx';
 import StudyConsent from './StudyConsent.jsx';
 
 const blankProgress = { attempts: [], completed: [], assessments: [], completedPaths: [], achievements: [], gamificationInitialized: false, currentRank: 'Rookie', rankHistory: [], activitySessions: [], progression: [], researchFeedback: null };
@@ -54,6 +58,19 @@ function getAchievements(progress, modules) {
   ];
 }
 
+function getNextSequenceChallenge(challenges, learningPaths, completedIds = []) {
+  const completed = new Set(completedIds);
+  const completedPaths = new Set(learningPaths.filter(path => path.modules.every(module => module.challengeIds.every(id => completed.has(id)))).map(path => path.id));
+  for (const path of learningPaths) {
+    if (path.prerequisites.some(id => !completedPaths.has(id))) continue;
+    for (const module of path.modules) {
+      const nextId = module.challengeIds.find(id => !completed.has(id) && challenges.some(item => item.id === id));
+      if (nextId) return challenges.find(item => item.id === nextId);
+    }
+  }
+  return challenges.find(item => !completed.has(item.id));
+}
+
 function App() {
   const [challenges, setChallenges] = useState([]);
   const [learningPaths, setLearningPaths] = useState([]);
@@ -63,6 +80,7 @@ function App() {
   const [hintsUsed, setHintsUsed] = useState(0);
   const [feedback, setFeedback] = useState(null);
   const [celebration, setCelebration] = useState(null);
+  const [remediation, setRemediation] = useState(null);
   const [recommendation, setRecommendation] = useState(null);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -77,6 +95,8 @@ function App() {
   const [recoveryPasswordConfirm, setRecoveryPasswordConfirm] = useState('');
   const [recoveryMessage, setRecoveryMessage] = useState('');
   const activityStartedAt = useRef(Date.now());
+  const remediationStartedAt = useRef(null);
+  const remediationScrollRef = useRef(null);
   const challenge = challenges.find(item => item.id === challengeId) ?? challenges[0];
   const totalPoints = useMemo(() => progress.attempts.reduce((sum, item) => sum + item.points, 0), [progress]);
   const accuracy = progress.attempts.length ? Math.round(progress.attempts.filter(item => item.correct).length / progress.attempts.length * 100) : null;
@@ -85,6 +105,12 @@ function App() {
   const strongestTopic = topicSummary[0];
   const achievements = getAchievements(progress, challenges);
   const clearedCount = challenges.filter(item => progress.completed.includes(item.id)).length;
+  const allScenariosComplete = challenges.length > 0 && challenges.every(item => progress.completed.includes(item.id));
+  const hasPreTest = (progress.assessments ?? []).some(item => item.phase === 'pre');
+  const firstScenarioClearTimes = challenges.map(challenge => (progress.attempts ?? []).filter(attempt => attempt.challengeId === challenge.id && attempt.correct).map(attempt => new Date(attempt.at).getTime()).filter(Number.isFinite).sort((first, second) => first - second)[0]);
+  const scenariosCompletedAt = firstScenarioClearTimes.length && firstScenarioClearTimes.every(Number.isFinite) ? Math.max(...firstScenarioClearTimes) : null;
+  const hasPostTest = scenariosCompletedAt !== null && (progress.assessments ?? []).some(item => item.phase === 'post' && new Date(item.at).getTime() >= scenariosCompletedAt);
+  const requiredAssessmentPhase = !hasPreTest ? 'pre' : allScenariosComplete && !hasPostTest ? 'post' : null;
   const calculatedRank = getSkillLevel(clearedCount);
   const rank = progress.gamificationInitialized ? { ...calculatedRank, name: progress.currentRank ?? calculatedRank.name } : calculatedRank;
   const rankProgress = rank.next ? Math.max(0, Math.min(100, (clearedCount - rank.threshold) / (rank.next.threshold - rank.threshold) * 100)) : 100;
@@ -99,6 +125,17 @@ function App() {
   });
 
   useEffect(() => { activityStartedAt.current = Date.now(); }, [challengeId]);
+
+  useEffect(() => {
+    const element = remediationScrollRef.current;
+    if (!element || !remediation) return undefined;
+    const markIfEverythingFits = () => {
+      if (element.scrollHeight <= element.clientHeight + 8) setRemediation(current => current ? { ...current, lessonReadToEnd: true } : current);
+    };
+    markIfEverythingFits();
+    window.addEventListener('resize', markIfEverythingFits);
+    return () => window.removeEventListener('resize', markIfEverythingFits);
+  }, [remediation?.challengeId]);
 
   useEffect(() => {
     if (account?.role !== 'learner' || !hasCurrentConsent(account) || !['learning', 'evaluation'].includes(activeView)) return undefined;
@@ -154,13 +191,22 @@ function App() {
       setLearningPaths(paths);
       setProgress(savedProgress);
       setRecommendation(nextStep);
-      setChallengeId(nextStep.challengeId ?? items.find(item => !savedProgress.completed.includes(item.id))?.id ?? items[0]?.id ?? null);
+      const pendingRecovery = [...(savedProgress.attempts ?? [])].reverse().find(attempt => !attempt.correct && !savedProgress.completed.includes(attempt.challengeId) && items.some(item => item.id === attempt.challengeId));
+      const recoveryChallenge = items.find(item => item.id === pendingRecovery?.challengeId);
+      remediationStartedAt.current = recoveryChallenge ? Date.now() : null;
+      setChallengeId(recoveryChallenge?.id ?? getNextSequenceChallenge(items, paths, savedProgress.completed)?.id ?? nextStep.challengeId ?? items[0]?.id ?? null);
+      setFeedback(recoveryChallenge ? { correct: false, points: 0, hintsUsed: 0, explanation: recoveryChallenge.explanation, feedbackSource: 'guided' } : null);
+      setRemediation(recoveryChallenge ? { challengeId: recoveryChallenge.id, content: recoveryChallenge.remediation, selectedOption: null, feedback: null, submitting: false, lessonReadToEnd: false } : null);
       setApiError('');
     }).catch(error => {
       if (!cancelled) setApiError(`${error.message} Start the backend server in the backend folder, then refresh.`);
     }).finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, [account?.handle, account?.mustChangePassword, account?.researchConsent?.acceptedAt]);
+
+  useEffect(() => {
+    if (account?.role === 'learner' && !loading && requiredAssessmentPhase) setActiveView('evaluation');
+  }, [account?.role, loading, requiredAssessmentPhase]);
 
   async function saveRecoveryPassword(event) {
     event.preventDefault();
@@ -203,10 +249,12 @@ function App() {
 
   function chooseChallenge(item) {
     activityStartedAt.current = Date.now();
+    remediationStartedAt.current = null;
     setChallengeId(item.id);
     setSelectedOption(null);
     setHintsUsed(0);
     setFeedback(null);
+    setRemediation(null);
   }
 
   function beginPath(path) {
@@ -214,6 +262,28 @@ function App() {
     const nextItem = path.challenges.find(item => !progress.completed.includes(item.id));
     const selected = challenges.find(item => item.id === nextItem?.id);
     if (selected) chooseChallenge(selected);
+  }
+
+  function celebrateCompletedModule(completedChallengeId, updatedProgress) {
+    if (progress.completed.includes(completedChallengeId)) return false;
+    const completedIds = new Set(updatedProgress.completed);
+    const owningPath = learningPaths.find(path => path.modules.some(module => module.challengeIds.includes(completedChallengeId)));
+    const moduleIndex = owningPath?.modules.findIndex(module => module.challengeIds.includes(completedChallengeId)) ?? -1;
+    const completedModule = owningPath?.modules[moduleIndex];
+    if (!completedModule?.challengeIds.every(id => completedIds.has(id))) return false;
+    const campaignComplete = challenges.length > 0 && challenges.every(item => completedIds.has(item.id));
+    const pathComplete = owningPath.challengeIds.every(id => completedIds.has(id));
+    const nextModule = owningPath.modules.slice(moduleIndex + 1).find(module => !module.challengeIds.every(id => completedIds.has(id)))
+      ?? learningPaths.filter(path => path.prerequisites.every(prerequisite => learningPaths.find(parent => parent.id === prerequisite)?.challengeIds.every(id => completedIds.has(id))))
+        .flatMap(path => path.modules).find(module => !module.challengeIds.every(id => completedIds.has(id)));
+    setCelebration({
+      title: campaignComplete ? 'Campaign complete!' : pathComplete ? 'Learning path complete!' : 'Module complete!',
+      moduleTitle: completedModule.title,
+      pathTitle: owningPath.title,
+      campaignComplete,
+      nextChallengeId: campaignComplete ? null : nextModule?.challengeIds.find(id => !completedIds.has(id)) ?? null,
+    });
+    return true;
   }
 
   async function resetProgress() {
@@ -237,6 +307,7 @@ function App() {
     setSelectedOption(null);
     setHintsUsed(0);
     setFeedback(null);
+    setRemediation(null);
     setApiError('');
   }
 
@@ -255,27 +326,17 @@ function App() {
       if (!response.ok) throw new Error(result.error || 'Could not submit your answer.');
       setProgress(result.progress);
       setRecommendation(result.recommendation);
-      setFeedback({ correct: result.attempt?.correct ?? result.correct, points: result.attempt?.points ?? result.points, hintsUsed: result.attempt?.hintsUsed ?? hintsUsed, explanation: result.feedback.text, feedbackSource: result.feedback.source });
       const isCorrect = result.attempt?.correct ?? result.correct;
-      if (isCorrect && !progress.completed.includes(challenge.id)) {
-        const completedIds = new Set(result.progress.completed);
-        const owningPath = learningPaths.find(path => path.modules.some(module => module.challengeIds.includes(challenge.id)));
-        const moduleIndex = owningPath?.modules.findIndex(module => module.challengeIds.includes(challenge.id)) ?? -1;
-        const completedModule = owningPath?.modules[moduleIndex];
-        if (completedModule?.challengeIds.every(id => completedIds.has(id))) {
-          const campaignComplete = challenges.length > 0 && challenges.every(item => completedIds.has(item.id));
-          const pathComplete = owningPath.challengeIds.every(id => completedIds.has(id));
-          const nextModule = owningPath.modules.slice(moduleIndex + 1).find(module => !module.challengeIds.every(id => completedIds.has(id)))
-            ?? learningPaths.filter(path => path.prerequisites.every(prerequisite => learningPaths.find(parent => parent.id === prerequisite)?.challengeIds.every(id => completedIds.has(id))))
-              .flatMap(path => path.modules).find(module => !module.challengeIds.every(id => completedIds.has(id)));
-          setCelebration({
-            title: campaignComplete ? 'Campaign complete!' : pathComplete ? 'Learning path complete!' : 'Module complete!',
-            moduleTitle: completedModule.title,
-            pathTitle: owningPath.title,
-            campaignComplete,
-            nextChallengeId: campaignComplete ? null : nextModule?.challengeIds.find(id => !completedIds.has(id)) ?? null,
-          });
-        }
+      setFeedback({ correct: isCorrect, points: result.attempt?.points ?? result.points, hintsUsed: result.attempt?.hintsUsed ?? hintsUsed, explanation: result.feedback.text, feedbackSource: result.feedback.source });
+      if (isCorrect) {
+        setRemediation(null);
+        remediationStartedAt.current = null;
+        celebrateCompletedModule(challenge.id, result.progress);
+      } else if (!progress.completed.includes(challenge.id)) {
+        remediationStartedAt.current = Date.now();
+        setRemediation({ challengeId: challenge.id, content: challenge.remediation, selectedOption: null, feedback: null, submitting: false, lessonReadToEnd: false });
+      } else {
+        setRemediation(null);
       }
     } catch (error) {
       setApiError(`${error.message} Check that the backend is running, then try again.`);
@@ -284,8 +345,39 @@ function App() {
     }
   }
 
+  async function submitRemediationAnswer() {
+    if (!remediation || remediation.selectedOption === null || remediation.submitting || !remediation.lessonReadToEnd || !challenge) return;
+    setRemediation(current => ({ ...current, submitting: true, feedback: null }));
+    setApiError('');
+    try {
+      const response = await fetch(`/api/challenges/${remediation.challengeId}/remediation-answer`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ selectedAnswer: remediation.content.options[remediation.selectedOption], durationSeconds: remediationStartedAt.current ? Math.min(7200, Math.max(0, Math.round((Date.now() - remediationStartedAt.current) / 1000))) : 0 }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Could not submit the follow-up answer.');
+      setProgress(result.progress);
+      setRecommendation(result.recommendation);
+      if (!result.correct) {
+        remediationStartedAt.current = Date.now();
+        setRemediation(current => ({ ...current, selectedOption: null, submitting: false, feedback: { correct: false, text: result.feedback.text } }));
+        return;
+      }
+      remediationStartedAt.current = null;
+      setRemediation(null);
+      setFeedback({ correct: true, points: result.points, hintsUsed: 0, feedbackSource: 'guided', explanation: `Scenario cleared after the learning follow-up. ${result.feedback.text}`, autoAdvance: true });
+      if (!celebrateCompletedModule(challenge.id, result.progress)) {
+        const next = getNextSequenceChallenge(challenges, learningPaths, result.progress.completed);
+        if (next) window.setTimeout(() => chooseChallenge(next), 1100);
+      }
+    } catch (error) {
+      setApiError(`${error.message} Check that the backend is running, then try again.`);
+      setRemediation(current => current ? { ...current, submitting: false } : current);
+    }
+  }
+
   function continueLearning() {
-    chooseChallenge(challenges.find(item => item.id === recommendation?.challengeId) ?? nextChallenge ?? challenge);
+    chooseChallenge(getNextSequenceChallenge(challenges, learningPaths, progress.completed) ?? challenges.find(item => item.id === recommendation?.challengeId) ?? nextChallenge ?? challenge);
   }
 
   function continueAfterCelebration() {
@@ -329,14 +421,19 @@ function App() {
         <div className="side-label">LEARN</div>
         <nav>
           {account.role === 'learner' && <a className={`nav-link${activeView === 'learning' ? ' active' : ''}`} href="#home" onClick={event => { event.preventDefault(); setActiveView('learning'); }}><span aria-hidden="true">◈</span> Overview</a>}
-          {account.role === 'learner' && hasCurrentConsent(account) && <a className={`nav-link${activeView === 'evaluation' ? ' active' : ''}`} href="#evaluation" onClick={event => { event.preventDefault(); setActiveView('evaluation'); }}><span aria-hidden="true">▥</span> Evaluation</a>}
+          {account.role === 'learner' && <a className={`nav-link${activeView === 'evaluation' || requiredAssessmentPhase ? ' active' : ''}`} href="#evaluation" onClick={event => { event.preventDefault(); setActiveView('evaluation'); }}><span aria-hidden="true">▥</span> Assessments</a>}
           {account.role === 'admin' && <a className={`nav-link${activeView === 'admin' ? ' active' : ''}`} href="#admin" onClick={event => { event.preventDefault(); setActiveView('admin'); }}><span aria-hidden="true">⚙</span> Admin</a>}
+          {account.role === 'admin' && <a className={`nav-link${activeView === 'participant-analytics' ? ' active' : ''}`} href="#participant-analytics" onClick={event => { event.preventDefault(); setActiveView('participant-analytics'); }}><span aria-hidden="true">▥</span> Participant Analytics</a>}
+          {account.role === 'admin' && <a className={`nav-link${activeView === 'modules' ? ' active' : ''}`} href="#modules" onClick={event => { event.preventDefault(); setActiveView('modules'); }}><span aria-hidden="true">▤</span> Learning Modules</a>}
+          {account.role === 'admin' && <a className={`nav-link${activeView === 'activity-analytics' ? ' active' : ''}`} href="#activity-analytics" onClick={event => { event.preventDefault(); setActiveView('activity-analytics'); }}><span aria-hidden="true">◷</span> Activity Analytics</a>}
+          {account.role === 'admin' && <a className={`nav-link${activeView === 'research-outcomes' ? ' active' : ''}`} href="#research-outcomes" onClick={event => { event.preventDefault(); setActiveView('research-outcomes'); }}><span aria-hidden="true">◉</span> Research Outcomes</a>}
         </nav>
         <div className="sidebar-bottom"><div className="side-label">YOUR FIELD GUIDE</div><p>Small, smart decisions make a safer digital world.</p><div className="wolf-card"><span aria-hidden="true">🐺</span><div><strong>Stay curious.</strong><small>Think before you click.</small></div></div></div>
       </aside>
 
       <main id="home" className="main-content">
         {celebration && <div className="celebration-backdrop"><section className="celebration-card" role="dialog" aria-modal="true" aria-labelledby="celebration-title"><div className="celebration-sparkles" aria-hidden="true">✦　✧　✦</div><div className="celebration-medal" aria-hidden="true">{celebration.campaignComplete ? '🏆' : '✓'}</div><div className="eyebrow">CYBERWOLF MILESTONE</div><h2 id="celebration-title">{celebration.title}</h2><p>{celebration.campaignComplete ? 'You completed every scenario in the CyberWolf campaign. Outstanding work!' : celebration.title === 'Learning path complete!' ? `You completed every module in ${celebration.pathTitle}. Your progress has unlocked the next learning path.` : `You completed every scenario in “${celebration.moduleTitle}”. The next module is ready when you are.`}</p>{!celebration.campaignComplete && celebration.nextChallengeId && <small>UP NEXT · {challenges.find(item => item.id === celebration.nextChallengeId)?.title ?? 'Next module'}</small>}<button className="primary-button" type="button" onClick={continueAfterCelebration}>{celebration.campaignComplete ? 'Finish campaign' : 'Continue to next module'} <span aria-hidden="true">→</span></button></section></div>}
+        {!requiredAssessmentPhase && activeView !== 'evaluation' && remediation && remediation.challengeId === challenge?.id && <div className="scenario-remediation-backdrop"><section className="scenario-remediation-dialog" role="dialog" aria-modal="true" aria-labelledby="scenario-remediation-title"><header className="scenario-remediation-header"><div className="eyebrow">LEARNING PAUSE · {challenge.topic.toUpperCase()}</div><h2 id="scenario-remediation-title">Let’s review this scenario</h2><p>Your answer missed the safest response. Work through the notes, then answer a new related question to clear this scenario and continue.</p></header><div className="scenario-remediation-scroll" ref={remediationScrollRef} tabIndex="0" aria-label="Scrollable scenario learning cards" onScroll={event => { const element = event.currentTarget; if (element.scrollTop + element.clientHeight >= element.scrollHeight - 8) setRemediation(current => current ? { ...current, lessonReadToEnd: true } : current); }}><article className="scenario-learning-card"><span className="scenario-learning-label">SCENARIO</span><h3>{challenge.title}</h3><p>{challenge.scenario}</p><strong>Opening question</strong><p>{challenge.question}</p><strong>Your answer</strong><p>{challenge.options[selectedOption] ?? 'Not recorded'}</p><strong>Learning objective</strong><p>{challenge.learningObjective}</p></article><article className="scenario-learning-card"><span className="scenario-learning-label">WHAT TO NOTICE</span><h3>Signals and safe steps</h3><ul>{challenge.briefing?.map(point => <li key={point}>{point}</li>)}</ul><p>{challenge.explanation}</p></article><article className="scenario-learning-card scenario-learning-notes"><span className="scenario-learning-label">DETAILED NOTES · {remediation.content.title}</span>{remediation.content.notes.map((note, index) => <p key={`${index}-${note}`}>{note}</p>)}<div className="scenario-learning-takeaway"><b>Key takeaway</b><span>{remediation.content.explanation}</span></div></article><article className="scenario-learning-card scenario-followup-card"><span className="scenario-learning-label">RELATED FOLLOW-UP QUESTION</span><h3>{remediation.content.question}</h3><fieldset disabled={!remediation.lessonReadToEnd || remediation.submitting}>{remediation.content.options.map((option, index) => <button key={option} className={`answer-option${remediation.selectedOption === index ? ' selected' : ''}`} type="button" aria-pressed={remediation.selectedOption === index} onClick={() => setRemediation(current => current ? { ...current, selectedOption: index, feedback: null } : current)}><span className="option-key">{String.fromCharCode(65 + index)}</span><span>{option}</span></button>)}</fieldset>{remediation.feedback && <div className={`feedback ${remediation.feedback.correct ? 'correct' : 'incorrect'}`} role="status"><strong>{remediation.feedback.correct ? 'Correct — scenario cleared.' : 'Not quite. Review the notes and try again.'}</strong>{remediation.feedback.text}</div>}</article></div><footer className="scenario-remediation-footer"><span>{remediation.lessonReadToEnd ? 'Notes reviewed · answer the related question to continue.' : 'Scroll through the lesson notes to reach the related question.'}</span><button className="primary-button" type="button" disabled={!remediation.lessonReadToEnd || remediation.selectedOption === null || remediation.submitting} onClick={submitRemediationAnswer}>{remediation.submitting ? 'Checking…' : 'Check related answer'} <span aria-hidden="true">→</span></button></footer></section></div>}
         <header className="topbar"><div className="breadcrumb">LEARN <span>/</span> {activeView.toUpperCase()}</div><div className="user-chip"><span className="avatar">{account.role === 'admin' ? 'A' : 'W'}</span><span>{account.username ?? account.handle} · {account.role}</span>{account.role === 'learner' && (hasCurrentConsent(account) ? <button className="logout-button" type="button" onClick={withdrawFromResearch}>Withdraw</button> : <button className="logout-button" type="button" onClick={() => setShowConsent(true)}>Join study</button>)}<button className="logout-button" type="button" onClick={signOut}>Sign out</button></div></header>
         <section className="welcome-row"><div><div className="eyebrow"><span className="status-dot" /> YOUR CYBERSECURITY FIELD GUIDE</div><h1>Make the smart call.</h1><p className="subtitle">Real-world scenarios. Better instincts. One challenge at a time.</p></div><div className="streak-card"><span className="streak-icon">✦</span><div><small>YOUR POINTS</small><strong>{totalPoints} <span>XP</span></strong></div></div></section>
 
@@ -344,7 +441,7 @@ function App() {
         {account.role === 'learner' && !account.credentialsConfigured && <form className="practice-status" onSubmit={saveRecoveryPassword}><strong>Set a recovery password to protect this progress</strong><span>This account was created before learner sign-in was added. Set a password now and save it with your learner code. No personal details are needed.</span><label className="auth-field">Password (12–128 characters)<input type="password" minLength="12" maxLength="128" autoComplete="new-password" value={recoveryPassword} onChange={event => setRecoveryPassword(event.target.value)} required /></label><label className="auth-field">Confirm password<input type="password" minLength="12" maxLength="128" autoComplete="new-password" value={recoveryPasswordConfirm} onChange={event => setRecoveryPasswordConfirm(event.target.value)} required /></label>{recoveryMessage && <span role="status">{recoveryMessage}</span>}<button className="primary-button" type="submit">Save recovery password</button></form>}
         {practiceOnly && <div className="practice-status" role="status">Practice mode: your scores and completions are saved to your learner profile for progress continuity. Research analytics and activity-time tracking remain off unless you choose to participate. <button className="logout-button" type="button" onClick={() => setShowConsent(true)}>Review study information</button></div>}
         {apiError && <div className="api-error" role="alert">{apiError}</div>}
-        {account.role === 'admin' ? <AdminPanel /> : activeView === 'evaluation' && hasCurrentConsent(account) ? <EvaluationPanel participant consentedAt={account.researchConsent?.acceptedAt} /> : <>
+        {account.role === 'admin' ? activeView === 'participant-analytics' ? <AdminAnalytics /> : activeView === 'modules' ? <AdminModules /> : activeView === 'activity-analytics' ? <ActivityAnalytics /> : activeView === 'research-outcomes' ? <ResearchOutcomes /> : <AdminPanel /> : (activeView === 'evaluation' || (!loading && requiredAssessmentPhase)) ? <EvaluationPanel participant={hasCurrentConsent(account)} consentedAt={account.researchConsent?.acceptedAt} requiredPhase={requiredAssessmentPhase} postUnlocked={allScenariosComplete} postEligibleAt={scenariosCompletedAt} onProgressUpdated={setProgress} /> : <>
         <section className="stats-grid" aria-label="Learning summary">
           <article className="stat-card"><span className="stat-icon green">◉</span><div><span className="stat-label">MISSIONS CLEARED</span><strong>{clearedCount} <small>/ {challenges.length}</small></strong></div><span className="stat-note">Keep it going</span></article>
           <article className="stat-card"><span className="stat-icon gold">✧</span><div><span className="stat-label">ACCURACY</span><strong>{accuracy ?? '—'}<small>%</small></strong></div><span className="stat-note">Across attempts</span></article>
@@ -387,10 +484,10 @@ function App() {
               <fieldset className="options" disabled={Boolean(feedback) || submitting}><legend>{challenge.question}</legend>{challenge.options.map((option, index) => <button key={option} className={`answer-option${selectedOption === index ? ' selected' : ''}`} type="button" aria-pressed={selectedOption === index} onClick={() => setSelectedOption(index)}><span className="option-key">{String.fromCharCode(65 + index)}</span><span>{option}</span></button>)}</fieldset>
               {!feedback && <div className="challenge-actions challenge-actions-wrap"><div className="action-help"><span className="hint">Choose the response that best protects you.</span>{hintsUsed > 0 && <span className="hint-count">{hintsUsed} hint{hintsUsed === 1 ? '' : 's'} used · fewer points for hinted answers</span>}</div><div className="action-buttons">{hintsUsed < (challenge.hints?.length ?? 0) && <button className="secondary-button hint-button" type="button" disabled={submitting} onClick={() => setHintsUsed(count => count + 1)}>Show hint {hintsUsed + 1}</button>}<button className="primary-button" type="button" disabled={selectedOption === null || submitting} onClick={submitAnswer}>{submitting ? 'Checking…' : 'Check my answer'} <span aria-hidden="true">→</span></button></div></div>}
               {!feedback && hintsUsed > 0 && <div className="hint-reveal" aria-live="polite">{challenge.hints.slice(0, hintsUsed).map((hint, index) => <p key={hint}><span>HINT {index + 1}</span>{hint}</p>)}</div>}
-              {feedback && <><div className={`feedback ${feedback.correct ? 'correct' : 'incorrect'}`} role="status"><strong>{feedback.correct ? `Good call! +${feedback.points} XP${feedback.hintsUsed ? ` · ${feedback.hintsUsed} hint${feedback.hintsUsed === 1 ? '' : 's'} used` : ''}` : `Not quite. +${feedback.points} XP for giving it a try.`}</strong><span className="feedback-source">{feedback.feedbackSource === 'ai' ? 'AI-assisted feedback' : 'Guided feedback'}</span>{feedback.explanation}</div><div className="challenge-actions"><span className="hint">{clearedCount} of {challenges.length} missions cleared</span><button className="secondary-button" type="button" onClick={continueLearning}>{recommendation?.challengeId === challenge?.id ? 'Review this mission ↻' : 'Continue learning →'}</button></div></>}
+              {feedback && <><div className={`feedback ${feedback.correct ? 'correct' : 'incorrect'}`} role="status"><strong>{feedback.correct ? `Good call! +${feedback.points} XP${feedback.hintsUsed ? ` · ${feedback.hintsUsed} hint${feedback.hintsUsed === 1 ? '' : 's'} used` : ''}` : `Not quite. +${feedback.points} XP for giving it a try.`}</strong><span className="feedback-source">{feedback.feedbackSource === 'ai' ? 'AI-assisted feedback' : 'Guided feedback'}</span>{feedback.explanation}</div><div className="challenge-actions"><span className="hint">{feedback.autoAdvance ? 'Opening the next scenario…' : `${clearedCount} of ${challenges.length} missions cleared`}</span><button className="secondary-button" type="button" disabled={feedback.autoAdvance} onClick={continueLearning}>{feedback.autoAdvance ? 'Next scenario loading…' : recommendation?.challengeId === challenge?.id ? 'Review this mission ↻' : 'Continue learning →'}</button></div></>}
               </>}
             </div>
-            {challenges.length > 0 && <div className="challenge-picker"><span className="picker-label">MISSION BOARD · {challenges.length} SCENARIOS · COMPLETE MODULES IN ORDER TO UNLOCK LATER MISSIONS</span>{challenges.map((item, index) => { const owningPath = pathProgress.find(path => path.challengeIds.includes(item.id)); const moduleIndex = owningPath?.modules.findIndex(module => module.challengeIds.includes(item.id)) ?? -1; const earlierModulesComplete = !owningPath || moduleIndex <= 0 || owningPath.modules.slice(0, moduleIndex).every(module => module.challengeIds.every(id => progress.completed.includes(id))); const locked = Boolean(owningPath && (!owningPath.unlocked || !earlierModulesComplete)); return <button className={`picker-item${item.id === challenge?.id ? ' current' : ''}${progress.completed.includes(item.id) ? ' cleared' : ''}${locked ? ' locked' : ''}`} key={item.id} onClick={() => chooseChallenge(item)} type="button" disabled={locked} aria-current={item.id === challenge?.id ? 'step' : undefined}><span className="picker-state">{progress.completed.includes(item.id) ? '✓' : String(item.missionOrder ?? index + 1).padStart(2, '0')}</span><span className="picker-title">{item.title}<small>{item.topic}</small></span><span className="mission-state">{progress.completed.includes(item.id) ? 'CLEARED' : locked ? 'LOCKED' : 'READY'}</span></button>; })}</div>}
+            {challenges.length > 0 && <div className="challenge-picker"><span className="picker-label">MISSION BOARD · {challenges.length} SCENARIOS · COMPLETE EACH SCENARIO IN ORDER; CLEAR THE MODULE TO UNLOCK THE NEXT</span>{challenges.map((item, index) => { const owningPath = pathProgress.find(path => path.challengeIds.includes(item.id)); const moduleIndex = owningPath?.modules.findIndex(module => module.challengeIds.includes(item.id)) ?? -1; const owningModule = owningPath?.modules[moduleIndex]; const scenarioIndex = owningModule?.challengeIds.indexOf(item.id) ?? -1; const earlierModulesComplete = !owningPath || moduleIndex <= 0 || owningPath.modules.slice(0, moduleIndex).every(module => module.challengeIds.every(id => progress.completed.includes(id))); const earlierScenariosComplete = scenarioIndex <= 0 || owningModule.challengeIds.slice(0, scenarioIndex).every(id => progress.completed.includes(id)); const locked = Boolean(owningPath && (!owningPath.unlocked || !earlierModulesComplete || (!progress.completed.includes(item.id) && !earlierScenariosComplete))); return <button className={`picker-item${item.id === challenge?.id ? ' current' : ''}${progress.completed.includes(item.id) ? ' cleared' : ''}${locked ? ' locked' : ''}`} key={item.id} onClick={() => chooseChallenge(item)} type="button" disabled={locked || Boolean(remediation)} aria-current={item.id === challenge?.id ? 'step' : undefined}><span className="picker-state">{progress.completed.includes(item.id) ? '✓' : String(item.missionOrder ?? index + 1).padStart(2, '0')}</span><span className="picker-title">{item.title}<small>{item.topic}</small></span><span className="mission-state">{progress.completed.includes(item.id) ? 'CLEARED' : locked ? 'LOCKED' : 'READY'}</span></button>; })}</div>}
           </div>
           <aside className="recommendation" id="progress"><div className="recommend-icon">✳</div><div className="eyebrow">PERSONALIZED FOR YOU</div><h3>Your next move</h3><p>{recommendation?.message ?? 'Complete a challenge to get a recommendation based on your results.'}</p>{recommendation?.title && <div className="recommended-activity"><b>{recommendation.title}</b><small>{(recommendation.difficulty ?? 'intermediate').toUpperCase()} · {Math.max(1, Math.round((recommendation.estimatedDurationSeconds ?? 180) / 60))} MIN</small></div>}<div className="recommend-rule"><span className="rule-dot" /><span>{recommendation ? `Rule: ${recommendation.reason}` : 'Recommendations use your recent challenge results.'}</span></div>
             {topicSummary.length > 0 && <div className="insight-panel"><strong className="insight-title">TOPIC MASTERY</strong>{topicSummary.map(topic => <div className="mastery-row" key={topic.topic}><div className="mastery-label"><span>{topic.topic}</span><span>{topic.accuracy}%</span></div><div className="mastery-track"><span style={{ width: `${topic.accuracy}%` }} /></div></div>)}<small>{strongestTopic?.topic} is currently your strongest topic.</small></div>}

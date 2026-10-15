@@ -8,6 +8,7 @@ const userSchema = new mongoose.Schema({
   credentialsConfigured: { type: Boolean, default: false },
   mustChangePassword: { type: Boolean, default: false },
   passwordResetRequestedAt: { type: Date, default: null },
+  loginEvents: { type: [Date], default: [] },
   role: { type: String, enum: ['learner', 'admin'], default: 'learner', required: true },
   researchConsent: {
     version: { type: String, default: null },

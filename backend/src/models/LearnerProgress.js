@@ -12,7 +12,7 @@ const attemptSchema = new mongoose.Schema({
 }, { _id: false });
 
 const assessmentSchema = new mongoose.Schema({
-  phase: { type: String, enum: ['pre', 'post'], required: true },
+  phase: { type: String, enum: ['pre', 'post', 'retention', 'transfer'], required: true },
   score: { type: Number, required: true, min: 0 },
   total: { type: Number, required: true, min: 1 },
   durationSeconds: { type: Number, default: null, min: 0 },
