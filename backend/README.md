@@ -22,7 +22,8 @@ The API listens on port 4000 by default. When MongoDB is available, accounts and
 - `GET /api/challenges` — public challenge content
 - `GET /api/challenges/:challengeId` — one public challenge
 - `POST /api/auth/register` — create a learner profile with a generated learner code and chosen password, without identifying details
-- `POST /api/auth/login` — sign in with learner code and password; `POST /api/auth/learner-password` — set or replace a password while signed in; `POST /api/auth/logout`, `GET /api/auth/me` — manage the session
+- `POST /api/auth/login` — sign in with learner code and password; `POST /api/auth/forgot-password` — send a password-reset request to the admin panel; `POST /api/auth/learner-password` — set or replace a password while signed in; `POST /api/auth/logout`, `GET /api/auth/me` — manage the session
+- `GET /api/admin/learners`, `PATCH /api/admin/learners/:learnerId/code`, `POST /api/admin/learners/:learnerId/password-reset` — manage learner codes and requested password resets
 - `POST /api/auth/admin-login` — admin username/password sign-in
 - `POST /api/auth/bootstrap-admin` — create the first admin with a username/password and the server's one-time setup key
 - `POST /api/research/consent`, `DELETE /api/research/consent` — record voluntary learner consent or withdraw and delete saved study records
@@ -43,7 +44,7 @@ The adaptive engine uses explainable rules and three challenge levels (`foundati
 
 ## Authentication, privacy, and roles
 
-New learners create an account using a generated random learner code and a password they choose. They do not enter a name, email, phone number, personal ID, or username. Progress is stored server-side against that pseudonymous account; the browser's HTTP-only session cookie lasts up to 30 days, after which the learner signs in again with their code and password. Clearing browser data or changing devices does not delete server progress. Learners must save both credentials: there is no contact detail for password recovery. Passwords are hashed with Node's scrypt implementation. Existing anonymous sessions can set a password while signed in to make their current profile recoverable.
+New learners receive sequential codes such as `wolf-1` and choose a password. They do not enter a name, email, phone number, personal ID, or username. Progress is stored server-side against that pseudonymous account; the browser's HTTP-only session cookie lasts up to 30 days, after which the learner signs in again with their code and password. Clearing browser data or changing devices does not delete server progress. Passwords are hashed with Node's scrypt implementation. Learners who forget a password can submit a reset request using their code; admins see pending requests in the account section, issue a one-time temporary password, and the learner must replace it at next sign-in. Admins can also change learner codes while preserving their progress.
 
 Admins use a separate username/password form. The first admin is created only with the server's one-time `ADMIN_BOOTSTRAP_KEY`; usernames are unique and normalized to lowercase. A pre-existing admin can enter a new username with their current password on the admin sign-in form to set their username during the first successful sign-in. Admin-only routes protect module management and participant-level and aggregate research analytics.
 

@@ -56,7 +56,8 @@ export async function requireAuth(req, res, next) {
   try {
     const account = await getUserById(req.account.accountId);
     if (!account) return res.status(401).json({ error: 'This account is no longer active. Sign in again.' });
-    req.account = { ...req.account, username: account.username ?? req.account.username, role: account.role, credentialsConfigured: account.credentialsConfigured === true, researchConsent: account.researchConsent };
+    req.account = { ...req.account, handle: account.handle, username: account.username ?? req.account.username, role: account.role, credentialsConfigured: account.credentialsConfigured === true, mustChangePassword: account.mustChangePassword === true, researchConsent: account.researchConsent };
+    if (req.account.mustChangePassword && !['/api/auth/me', '/api/auth/learner-password'].includes(req.path)) return res.status(403).json({ error: 'Set a new password before continuing.' });
   } catch (error) { return next(error); }
   return next();
 }

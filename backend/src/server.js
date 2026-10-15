@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { randomUUID } from 'node:crypto';
+import { randomInt, randomUUID } from 'node:crypto';
 import cors from 'cors';
 import express from 'express';
 import mongoose from 'mongoose';
@@ -9,7 +9,7 @@ import { recommendNextActivity } from './services/adaptiveEngine.js';
 import { learningPaths, pathChallengeIds, completedLearningPaths, learningPathProgress } from './content/learningPaths.js';
 import { updateGamification } from './services/gamification.js';
 import { generateChallengeFeedback } from './services/feedbackService.js';
-import { authenticateAdmin, authenticateUser, clearResearchConsent, createUser, getUserById, hasAdminAccount, listResearchConsentedParticipants, setLearnerPassword, setResearchConsent, validateAdminUsername, validatePassword } from './services/authService.js';
+import { adminResetLearnerPassword, authenticateAdmin, authenticateUser, clearResearchConsent, createUser, getUserById, hasAdminAccount, listLearnersForAdmin, listResearchConsentedParticipants, renameLearnerCode, requestLearnerPasswordReset, setLearnerPassword, setResearchConsent, validateAdminUsername, validatePassword } from './services/authService.js';
 import { attachSession, clearSessionCookie, createSession, makeSessionCookie, requireAuth, requireRole, requireStudyConsent } from './services/sessionService.js';
 import { createModule, deleteModule, getModule, listModules, seedModules, updateModule, validateModule } from './services/moduleStore.js';
 
@@ -22,17 +22,12 @@ const dataRetentionDays = Math.max(0, Number.parseInt(process.env.DATA_RETENTION
 
 function publicChallenge(challenge) {
   const { answerIndex, ...publicContent } = challenge;
-  return { ...publicContent, options: orderedChallengeOptions(challenge) };
-}
-
-function orderedChallengeOptions(challenge) {
-  const options = challenge.options ?? [];
-  if (options.length < 2) return options;
-  const missionOrder = Number.isInteger(challenge.missionOrder) && challenge.missionOrder > 0
-    ? challenge.missionOrder
-    : [...challenge.id].reduce((hash, character) => ((hash * 31) + character.charCodeAt(0)) >>> 0, 0) + 1;
-  const offset = (missionOrder - 1) % options.length;
-  return options.map((_, index) => options[(index + offset) % options.length]);
+  const options = [...(challenge.options ?? [])];
+  for (let index = options.length - 1; index > 0; index -= 1) {
+    const swap = randomInt(index + 1);
+    [options[index], options[swap]] = [options[swap], options[index]];
+  }
+  return { ...publicContent, options };
 }
 
 function durationSeconds(value) {
@@ -67,6 +62,15 @@ app.post('/api/auth/login', async (req, res, next) => {
   } catch (error) { return next(error); }
 });
 
+app.post('/api/auth/forgot-password', async (req, res, next) => {
+  try {
+    const { handle } = req.body ?? {};
+    if (typeof handle !== 'string' || handle.length > 40) return res.status(400).json({ error: 'Enter your learner code.' });
+    await requestLearnerPasswordReset(handle);
+    return res.status(202).json({ message: 'If that learner code exists, a password reset request has been sent to the admin.' });
+  } catch (error) { return next(error); }
+});
+
 app.post('/api/auth/learner-password', requireAuth, async (req, res, next) => {
   try {
     if (req.account.role !== 'learner') return res.status(403).json({ error: 'This option is for learner accounts.' });
@@ -97,7 +101,31 @@ app.post('/api/auth/logout', (_req, res) => {
   return res.status(204).end();
 });
 
-app.get('/api/auth/me', requireAuth, (req, res) => res.json({ handle: req.account.handle, username: req.account.username ?? null, role: req.account.role, credentialsConfigured: req.account.credentialsConfigured === true, researchConsent: req.account.researchConsent ?? { version: null, acceptedAt: null }, studyInfoVersion, dataRetentionDays }));
+app.get('/api/auth/me', requireAuth, (req, res) => res.json({ handle: req.account.handle, username: req.account.username ?? null, role: req.account.role, credentialsConfigured: req.account.credentialsConfigured === true, mustChangePassword: req.account.mustChangePassword === true, researchConsent: req.account.researchConsent ?? { version: null, acceptedAt: null }, studyInfoVersion, dataRetentionDays }));
+
+app.get('/api/admin/learners', requireRole('admin'), async (_req, res, next) => {
+  try { return res.json(await listLearnersForAdmin()); }
+  catch (error) { return next(error); }
+});
+
+app.patch('/api/admin/learners/:learnerId/code', requireRole('admin'), async (req, res, next) => {
+  try {
+    const result = await renameLearnerCode(req.params.learnerId, req.body?.handle);
+    if (!result) return res.status(404).json({ error: 'Learner account not found.' });
+    return res.json(result);
+  } catch (error) {
+    if (error.message.toLowerCase().includes('learner code') || error.message.includes('already in use')) return res.status(409).json({ error: error.message });
+    return next(error);
+  }
+});
+
+app.post('/api/admin/learners/:learnerId/password-reset', requireRole('admin'), async (req, res, next) => {
+  try {
+    const result = await adminResetLearnerPassword(req.params.learnerId);
+    if (!result) return res.status(409).json({ error: 'There is no pending reset request for this learner.' });
+    return res.json({ ...result, message: 'Give this temporary password to the learner privately. They must choose a new password at their next sign-in.' });
+  } catch (error) { return next(error); }
+});
 
 app.post('/api/research/consent', requireAuth, async (req, res, next) => {
   try {
@@ -283,7 +311,6 @@ app.get('/api/research/summary', requireRole('admin'), async (_req, res, next) =
     });
     const matched = pairs.filter(pair => pair.pre && pair.post);
     const mean = values => values.length ? Math.round(values.reduce((sum, value) => sum + value, 0) / values.length * 10) / 10 : null;
-    const reportable = participants.length >= 5;
     const learnersWithTimedActivity = learners.filter(learner => (learner.activitySessions ?? []).length || learner.attempts.some(attempt => Number.isInteger(attempt.durationSeconds)) || learner.assessments.some(assessment => Number.isInteger(assessment.durationSeconds)));
     const toPercent = item => item ? item.score / item.total * 100 : null;
     const challengeCatalog = await listModules();
@@ -402,32 +429,32 @@ app.get('/api/research/summary', requireRole('admin'), async (_req, res, next) =
     }
     const topicGains = [...new Set(learnerAnalytics.flatMap(learner => learner.assessments.topicProgress.map(item => item.topic)))].map(topic => {
       const values = learnerAnalytics.map(learner => learner.assessments.topicProgress.find(item => item.topic === topic)?.improvementPoints).filter(Number.isFinite);
-      const hasReportableSample = reportable && values.length >= 5;
-      return { topic, matchedLearners: hasReportableSample ? values.length : null, meanImprovementPoints: hasReportableSample ? mean(values) : null };
+      return { topic, matchedLearners: values.length, meanImprovementPoints: values.length ? mean(values) : null };
     });
     return res.json({
-      learnersWithPre: reportable ? pairs.filter(pair => pair.pre).length : null,
-      learnersWithPost: reportable ? pairs.filter(pair => pair.post).length : null,
-      matchedPairs: reportable ? matched.length : null,
-      meanPrePercent: reportable ? mean(matched.map(pair => toPercent(pair.pre))) : null,
-      meanPostPercent: reportable ? mean(matched.map(pair => toPercent(pair.post))) : null,
-      meanChangePoints: reportable ? mean(matched.map(pair => toPercent(pair.post) - toPercent(pair.pre))) : null,
-      meanModulesCompleted: reportable ? mean(learnerAnalytics.map(learner => learner.moduleCompletion.completed)) : null,
-      meanModuleCompletionRate: reportable ? mean(learnerAnalytics.map(learner => learner.moduleCompletion.rate)) : null,
-      meanChallengeCompletionRate: reportable ? mean(learnerAnalytics.map(learner => learner.challengeCompletion.rate)) : null,
-      meanActiveLearningMinutes: reportable && learnersWithTimedActivity.length >= 5 ? mean(learnerAnalytics.filter(learner => learner.activity.timeTrackedActivities > 0).map(learner => learner.activity.timeSpentSeconds / 60)) : null,
-      learnersWithTimedActivity: reportable ? learnersWithTimedActivity.length : null,
-      feedbackResponseCount: reportable ? learners.filter(learner => learner.researchFeedback).length : null,
+      consentedParticipantCount: participants.length,
+      learnersWithPre: pairs.filter(pair => pair.pre).length,
+      learnersWithPost: pairs.filter(pair => pair.post).length,
+      matchedPairs: matched.length,
+      meanPrePercent: mean(pairs.filter(pair => pair.pre).map(pair => toPercent(pair.pre))),
+      meanPostPercent: mean(pairs.filter(pair => pair.post).map(pair => toPercent(pair.post))),
+      meanChangePoints: mean(matched.map(pair => toPercent(pair.post) - toPercent(pair.pre))),
+      meanModulesCompleted: mean(learnerAnalytics.map(learner => learner.moduleCompletion.completed)),
+      meanModuleCompletionRate: mean(learnerAnalytics.map(learner => learner.moduleCompletion.rate)),
+      meanChallengeCompletionRate: mean(learnerAnalytics.map(learner => learner.challengeCompletion.rate)),
+      meanActiveLearningMinutes: learnersWithTimedActivity.length ? mean(learnerAnalytics.filter(learner => learner.activity.timeTrackedActivities > 0).map(learner => learner.activity.timeSpentSeconds / 60)) : null,
+      learnersWithTimedActivity: learnersWithTimedActivity.length,
+      feedbackResponseCount: learners.filter(learner => learner.researchFeedback).length,
       feedbackMeanRatings: Object.fromEntries(['usability', 'engagement', 'learningValue', 'adaptationRelevance', 'feedbackClarity'].map(field => {
         const values = learners.map(learner => learner.researchFeedback?.[field]).filter(Number.isInteger);
-        return [field, reportable && values.length >= 5 ? mean(values) : null];
+        return [field, values.length ? mean(values) : null];
       })),
       learners: learnerAnalytics,
-      recommendationStrategyComparison: reportable ? [...strategyStats.values()].map(item => ({ ...item, followupSuccessRate: item.followups ? Math.round(item.correctFollowups / item.followups * 100) : null })) : null,
+      recommendationStrategyComparison: [...strategyStats.values()].map(item => ({ ...item, followupSuccessRate: item.followups ? Math.round(item.correctFollowups / item.followups * 100) : null })),
       topicLearningGains: topicGains,
       moduleCount: learningModuleCatalog.length,
       challengeCount: challengeCatalog.length,
-      note: 'Only opted-in learner records are included. Aggregate means are hidden until at least five participants have consented; feedback means also require five responses. Consent text remains a draft until approved for the study.',
+      note: 'Only opted-in learner records are included. Aggregate results use the current sample size; interpret small-sample averages as preliminary. Consent text remains a draft until approved for the study.',
     });
   } catch (error) { return next(error); }
 });
@@ -452,13 +479,13 @@ app.get('/api/admin/retention', requireRole('admin'), (_req, res) => res.json({ 
 
 app.post('/api/attempts', requireAuth, requireStudyConsent, async (req, res, next) => {
   try {
-    const { challengeId, selectedOption, hintsUsed = 0 } = req.body ?? {};
+    const { challengeId, selectedAnswer, hintsUsed = 0 } = req.body ?? {};
     if (typeof challengeId !== 'string') return res.status(400).json({ error: 'A challengeId is required.' });
-    if (!Number.isInteger(selectedOption)) return res.status(400).json({ error: 'selectedOption must be an integer.' });
+    if (typeof selectedAnswer !== 'string') return res.status(400).json({ error: 'Select an answer.' });
     if (!Number.isInteger(hintsUsed) || hintsUsed < 0) return res.status(400).json({ error: 'hintsUsed must be a non-negative integer.' });
     const challenge = await getModule(challengeId);
     if (!challenge) return res.status(404).json({ error: 'Challenge not found.' });
-    if (selectedOption < 0 || selectedOption >= challenge.options.length) return res.status(400).json({ error: 'selectedOption is out of range.' });
+    if (!challenge.options.includes(selectedAnswer)) return res.status(400).json({ error: 'The selected answer is not valid for this challenge.' });
     if (hintsUsed > (challenge.hints?.length ?? 0)) return res.status(400).json({ error: 'hintsUsed is out of range.' });
 
     const current = await getProgress(req.account.accountId);
@@ -467,15 +494,14 @@ app.post('/api/attempts', requireAuth, requireStudyConsent, async (req, res, nex
     if (owningPath && owningPath.prerequisites.some(id => !completedPathIds.has(id))) return res.status(409).json({ error: 'Complete the prerequisite learning path before starting this challenge.' });
     const owningModuleIndex = owningPath?.modules.findIndex(module => module.challengeIds.includes(challengeId)) ?? -1;
     if (owningModuleIndex > 0 && owningPath.modules.slice(0, owningModuleIndex).some(module => !module.challengeIds.every(id => current.completed.includes(id)))) return res.status(409).json({ error: 'Complete the earlier modules in this learning path before starting this challenge.' });
-    const displayedOptions = orderedChallengeOptions(challenge);
-    const correct = displayedOptions[selectedOption] === challenge.options[challenge.answerIndex];
+    const correct = selectedAnswer === challenge.options[challenge.answerIndex];
     const firstClear = correct && !current.completed.includes(challengeId);
     const points = correct
       ? firstClear ? Math.max(40, 100 - hintsUsed * 20) : Math.max(10, 25 - hintsUsed * 5)
       : 5;
     const duration = durationSeconds(req.body?.durationSeconds);
     const modules = await listModules();
-    const feedback = await generateChallengeFeedback({ challenge: { ...challenge, options: displayedOptions }, selectedOption, correct });
+    const feedback = await generateChallengeFeedback({ challenge, selectedAnswer, correct });
     const attempt = { challengeId, topic: challenge.topic, correct, points, hintsUsed, durationSeconds: duration, feedbackSource: feedback.source, at: new Date().toISOString() };
     const previousCompletedCount = current.completed.length;
     let progress = {
@@ -494,12 +520,12 @@ app.post('/api/attempts', requireAuth, requireStudyConsent, async (req, res, nex
 
 app.post('/api/practice/answer', requireAuth, async (req, res, next) => {
   try {
-    const { challengeId, selectedOption, hintsUsed = 0 } = req.body ?? {};
-    if (typeof challengeId !== 'string' || !Number.isInteger(selectedOption)) return res.status(400).json({ error: 'Select an answer for a valid challenge.' });
+    const { challengeId, selectedAnswer, hintsUsed = 0 } = req.body ?? {};
+    if (typeof challengeId !== 'string' || typeof selectedAnswer !== 'string') return res.status(400).json({ error: 'Select an answer for a valid challenge.' });
     if (!Number.isInteger(hintsUsed) || hintsUsed < 0) return res.status(400).json({ error: 'hintsUsed must be a non-negative integer.' });
     const challenge = await getModule(challengeId);
     if (!challenge) return res.status(404).json({ error: 'Challenge not found.' });
-    if (selectedOption < 0 || selectedOption >= challenge.options.length) return res.status(400).json({ error: 'selectedOption is out of range.' });
+    if (!challenge.options.includes(selectedAnswer)) return res.status(400).json({ error: 'The selected answer is not valid for this challenge.' });
     if (hintsUsed > (challenge.hints?.length ?? 0)) return res.status(400).json({ error: 'hintsUsed is out of range.' });
     const current = await getProgress(req.account.accountId);
     const owningPath = learningPaths.find(path => path.modules.some(module => module.challengeIds.includes(challengeId)));
@@ -507,8 +533,7 @@ app.post('/api/practice/answer', requireAuth, async (req, res, next) => {
     if (owningPath && owningPath.prerequisites.some(id => !completedPathIds.has(id))) return res.status(409).json({ error: 'Complete the prerequisite learning path before starting this challenge.' });
     const owningModuleIndex = owningPath?.modules.findIndex(module => module.challengeIds.includes(challengeId)) ?? -1;
     if (owningModuleIndex > 0 && owningPath.modules.slice(0, owningModuleIndex).some(module => !module.challengeIds.every(id => current.completed.includes(id)))) return res.status(409).json({ error: 'Complete the earlier modules in this learning path before starting this challenge.' });
-    const displayedOptions = orderedChallengeOptions(challenge);
-    const correct = displayedOptions[selectedOption] === challenge.options[challenge.answerIndex];
+    const correct = selectedAnswer === challenge.options[challenge.answerIndex];
     const firstClear = correct && !current.completed.includes(challengeId);
     const points = correct ? firstClear ? Math.max(40, 100 - hintsUsed * 20) : Math.max(10, 25 - hintsUsed * 5) : 5;
     const modules = await listModules();

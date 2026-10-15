@@ -62,6 +62,7 @@ function App() {
   const [selectedOption, setSelectedOption] = useState(null);
   const [hintsUsed, setHintsUsed] = useState(0);
   const [feedback, setFeedback] = useState(null);
+  const [celebration, setCelebration] = useState(null);
   const [recommendation, setRecommendation] = useState(null);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -131,14 +132,14 @@ function App() {
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Could not check sign-in.');
       return data;
-    }).then(currentAccount => { if (!cancelled) setAccount(currentAccount); })
+    }).then(currentAccount => { if (!cancelled) { setAccount(currentAccount); if (currentAccount?.role === 'admin') setActiveView('admin'); } })
       .catch(error => { if (!cancelled) setApiError(`${error.message} Check that the backend server is running.`); })
       .finally(() => { if (!cancelled) setAuthChecked(true); });
     return () => { cancelled = true; };
   }, []);
 
   useEffect(() => {
-    if (!account) return undefined;
+    if (!account || account.mustChangePassword) return undefined;
     let cancelled = false;
     setLoading(true);
     const requests = [
@@ -159,7 +160,7 @@ function App() {
       if (!cancelled) setApiError(`${error.message} Start the backend server in the backend folder, then refresh.`);
     }).finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [account?.handle, account?.researchConsent?.acceptedAt]);
+  }, [account?.handle, account?.mustChangePassword, account?.researchConsent?.acceptedAt]);
 
   async function saveRecoveryPassword(event) {
     event.preventDefault();
@@ -169,7 +170,7 @@ function App() {
       const response = await fetch('/api/auth/learner-password', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: recoveryPassword, passwordConfirm: recoveryPasswordConfirm }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || 'Could not save your password.');
-      setAccount(current => ({ ...current, credentialsConfigured: true }));
+      setAccount(current => ({ ...current, credentialsConfigured: true, mustChangePassword: false }));
       setRecoveryPassword(''); setRecoveryPasswordConfirm('');
       setRecoveryMessage('Recovery password saved. Keep your learner code and password safe to access this progress later.');
     } catch (error) { setRecoveryMessage(error.message); }
@@ -248,13 +249,34 @@ function App() {
       const response = await fetch(participating ? '/api/attempts' : '/api/practice/answer', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ challengeId: challenge.id, selectedOption, hintsUsed, durationSeconds: Math.min(7200, Math.max(0, Math.round((Date.now() - activityStartedAt.current) / 1000))) }),
+        body: JSON.stringify({ challengeId: challenge.id, selectedAnswer: challenge.options[selectedOption], hintsUsed, durationSeconds: Math.min(7200, Math.max(0, Math.round((Date.now() - activityStartedAt.current) / 1000))) }),
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || 'Could not submit your answer.');
       setProgress(result.progress);
       setRecommendation(result.recommendation);
       setFeedback({ correct: result.attempt?.correct ?? result.correct, points: result.attempt?.points ?? result.points, hintsUsed: result.attempt?.hintsUsed ?? hintsUsed, explanation: result.feedback.text, feedbackSource: result.feedback.source });
+      const isCorrect = result.attempt?.correct ?? result.correct;
+      if (isCorrect && !progress.completed.includes(challenge.id)) {
+        const completedIds = new Set(result.progress.completed);
+        const owningPath = learningPaths.find(path => path.modules.some(module => module.challengeIds.includes(challenge.id)));
+        const moduleIndex = owningPath?.modules.findIndex(module => module.challengeIds.includes(challenge.id)) ?? -1;
+        const completedModule = owningPath?.modules[moduleIndex];
+        if (completedModule?.challengeIds.every(id => completedIds.has(id))) {
+          const campaignComplete = challenges.length > 0 && challenges.every(item => completedIds.has(item.id));
+          const pathComplete = owningPath.challengeIds.every(id => completedIds.has(id));
+          const nextModule = owningPath.modules.slice(moduleIndex + 1).find(module => !module.challengeIds.every(id => completedIds.has(id)))
+            ?? learningPaths.filter(path => path.prerequisites.every(prerequisite => learningPaths.find(parent => parent.id === prerequisite)?.challengeIds.every(id => completedIds.has(id))))
+              .flatMap(path => path.modules).find(module => !module.challengeIds.every(id => completedIds.has(id)));
+          setCelebration({
+            title: campaignComplete ? 'Campaign complete!' : pathComplete ? 'Learning path complete!' : 'Module complete!',
+            moduleTitle: completedModule.title,
+            pathTitle: owningPath.title,
+            campaignComplete,
+            nextChallengeId: campaignComplete ? null : nextModule?.challengeIds.find(id => !completedIds.has(id)) ?? null,
+          });
+        }
+      }
     } catch (error) {
       setApiError(`${error.message} Check that the backend is running, then try again.`);
     } finally {
@@ -264,6 +286,12 @@ function App() {
 
   function continueLearning() {
     chooseChallenge(challenges.find(item => item.id === recommendation?.challengeId) ?? nextChallenge ?? challenge);
+  }
+
+  function continueAfterCelebration() {
+    const next = challenges.find(item => item.id === celebration?.nextChallengeId);
+    setCelebration(null);
+    if (next) chooseChallenge(next);
   }
 
   async function participate(consent) {
@@ -288,7 +316,8 @@ function App() {
   }
 
   if (!authChecked) return <main className="auth-loading">Connecting to CyberWolf…</main>;
-  if (!account) return <AuthScreen onAuthenticated={(signedInAccount, isNew) => { setAccount(signedInAccount); setNewAccountHandle(isNew && signedInAccount.role === 'learner' ? signedInAccount.handle : ''); setApiError(''); }} />;
+  if (!account) return <AuthScreen onAuthenticated={(signedInAccount, isNew) => { setAccount(signedInAccount); setActiveView(signedInAccount.role === 'admin' ? 'admin' : 'learning'); setNewAccountHandle(isNew && signedInAccount.role === 'learner' ? signedInAccount.handle : ''); setApiError(''); }} />;
+  if (account.role === 'learner' && account.mustChangePassword) return <main className="auth-page"><section className="auth-card"><a className="brand auth-brand" href="#home"><span className="brand-mark">W</span><span>cyber<span className="brand-light">wolf</span></span></a><div className="eyebrow">ACCOUNT SECURITY</div><h1>Choose a new password</h1><p className="auth-description">The admin issued a one-time temporary password. Set your own password before continuing. Your learner code is <strong>{account.handle}</strong>.</p><form onSubmit={saveRecoveryPassword}><label className="auth-field">New password (12–128 characters)<input type="password" minLength="12" maxLength="128" autoComplete="new-password" value={recoveryPassword} onChange={event => setRecoveryPassword(event.target.value)} required /></label><label className="auth-field">Confirm new password<input type="password" minLength="12" maxLength="128" autoComplete="new-password" value={recoveryPasswordConfirm} onChange={event => setRecoveryPasswordConfirm(event.target.value)} required /></label>{recoveryMessage && <div className="api-error" role="alert">{recoveryMessage}</div>}<button className="primary-button auth-submit" type="submit">Save new password</button></form><button className="logout-button" type="button" onClick={signOut}>Sign out</button></section></main>;
   if (account.role === 'learner' && (showConsent || (!practiceOnly && !hasCurrentConsent(account)))) {
     return <StudyConsent version={account.studyInfoVersion || 'draft-5'} learnerCode={newAccountHandle} retentionDays={account.dataRetentionDays ?? 0} previouslyConsented={Boolean(account.researchConsent?.acceptedAt)} actionError={apiError} onParticipate={participate} onPractice={() => { setPracticeOnly(true); setShowConsent(false); }} onWithdraw={withdrawFromConsentScreen} />;
   }
@@ -299,14 +328,15 @@ function App() {
         <a className="brand" href="#home" aria-label="CyberWolf home"><span className="brand-mark">W</span><span>cyber<span className="brand-light">wolf</span></span></a>
         <div className="side-label">LEARN</div>
         <nav>
-          <a className={`nav-link${activeView === 'learning' ? ' active' : ''}`} href="#home" onClick={event => { event.preventDefault(); setActiveView('learning'); }}><span aria-hidden="true">◈</span> Overview</a>
-          {(account.role === 'admin' || hasCurrentConsent(account)) && <a className={`nav-link${activeView === 'evaluation' ? ' active' : ''}`} href="#evaluation" onClick={event => { event.preventDefault(); setActiveView('evaluation'); }}><span aria-hidden="true">▥</span> Evaluation</a>}
+          {account.role === 'learner' && <a className={`nav-link${activeView === 'learning' ? ' active' : ''}`} href="#home" onClick={event => { event.preventDefault(); setActiveView('learning'); }}><span aria-hidden="true">◈</span> Overview</a>}
+          {account.role === 'learner' && hasCurrentConsent(account) && <a className={`nav-link${activeView === 'evaluation' ? ' active' : ''}`} href="#evaluation" onClick={event => { event.preventDefault(); setActiveView('evaluation'); }}><span aria-hidden="true">▥</span> Evaluation</a>}
           {account.role === 'admin' && <a className={`nav-link${activeView === 'admin' ? ' active' : ''}`} href="#admin" onClick={event => { event.preventDefault(); setActiveView('admin'); }}><span aria-hidden="true">⚙</span> Admin</a>}
         </nav>
         <div className="sidebar-bottom"><div className="side-label">YOUR FIELD GUIDE</div><p>Small, smart decisions make a safer digital world.</p><div className="wolf-card"><span aria-hidden="true">🐺</span><div><strong>Stay curious.</strong><small>Think before you click.</small></div></div></div>
       </aside>
 
       <main id="home" className="main-content">
+        {celebration && <div className="celebration-backdrop"><section className="celebration-card" role="dialog" aria-modal="true" aria-labelledby="celebration-title"><div className="celebration-sparkles" aria-hidden="true">✦　✧　✦</div><div className="celebration-medal" aria-hidden="true">{celebration.campaignComplete ? '🏆' : '✓'}</div><div className="eyebrow">CYBERWOLF MILESTONE</div><h2 id="celebration-title">{celebration.title}</h2><p>{celebration.campaignComplete ? 'You completed every scenario in the CyberWolf campaign. Outstanding work!' : celebration.title === 'Learning path complete!' ? `You completed every module in ${celebration.pathTitle}. Your progress has unlocked the next learning path.` : `You completed every scenario in “${celebration.moduleTitle}”. The next module is ready when you are.`}</p>{!celebration.campaignComplete && celebration.nextChallengeId && <small>UP NEXT · {challenges.find(item => item.id === celebration.nextChallengeId)?.title ?? 'Next module'}</small>}<button className="primary-button" type="button" onClick={continueAfterCelebration}>{celebration.campaignComplete ? 'Finish campaign' : 'Continue to next module'} <span aria-hidden="true">→</span></button></section></div>}
         <header className="topbar"><div className="breadcrumb">LEARN <span>/</span> {activeView.toUpperCase()}</div><div className="user-chip"><span className="avatar">{account.role === 'admin' ? 'A' : 'W'}</span><span>{account.username ?? account.handle} · {account.role}</span>{account.role === 'learner' && (hasCurrentConsent(account) ? <button className="logout-button" type="button" onClick={withdrawFromResearch}>Withdraw</button> : <button className="logout-button" type="button" onClick={() => setShowConsent(true)}>Join study</button>)}<button className="logout-button" type="button" onClick={signOut}>Sign out</button></div></header>
         <section className="welcome-row"><div><div className="eyebrow"><span className="status-dot" /> YOUR CYBERSECURITY FIELD GUIDE</div><h1>Make the smart call.</h1><p className="subtitle">Real-world scenarios. Better instincts. One challenge at a time.</p></div><div className="streak-card"><span className="streak-icon">✦</span><div><small>YOUR POINTS</small><strong>{totalPoints} <span>XP</span></strong></div></div></section>
 
@@ -314,7 +344,7 @@ function App() {
         {account.role === 'learner' && !account.credentialsConfigured && <form className="practice-status" onSubmit={saveRecoveryPassword}><strong>Set a recovery password to protect this progress</strong><span>This account was created before learner sign-in was added. Set a password now and save it with your learner code. No personal details are needed.</span><label className="auth-field">Password (12–128 characters)<input type="password" minLength="12" maxLength="128" autoComplete="new-password" value={recoveryPassword} onChange={event => setRecoveryPassword(event.target.value)} required /></label><label className="auth-field">Confirm password<input type="password" minLength="12" maxLength="128" autoComplete="new-password" value={recoveryPasswordConfirm} onChange={event => setRecoveryPasswordConfirm(event.target.value)} required /></label>{recoveryMessage && <span role="status">{recoveryMessage}</span>}<button className="primary-button" type="submit">Save recovery password</button></form>}
         {practiceOnly && <div className="practice-status" role="status">Practice mode: your scores and completions are saved to your learner profile for progress continuity. Research analytics and activity-time tracking remain off unless you choose to participate. <button className="logout-button" type="button" onClick={() => setShowConsent(true)}>Review study information</button></div>}
         {apiError && <div className="api-error" role="alert">{apiError}</div>}
-        {activeView === 'admin' && account.role === 'admin' ? <AdminPanel /> : activeView === 'evaluation' && (account.role === 'admin' || hasCurrentConsent(account)) ? <EvaluationPanel participant={account.role === 'learner'} consentedAt={account.researchConsent?.acceptedAt} /> : <>
+        {account.role === 'admin' ? <AdminPanel /> : activeView === 'evaluation' && hasCurrentConsent(account) ? <EvaluationPanel participant consentedAt={account.researchConsent?.acceptedAt} /> : <>
         <section className="stats-grid" aria-label="Learning summary">
           <article className="stat-card"><span className="stat-icon green">◉</span><div><span className="stat-label">MISSIONS CLEARED</span><strong>{clearedCount} <small>/ {challenges.length}</small></strong></div><span className="stat-note">Keep it going</span></article>
           <article className="stat-card"><span className="stat-icon gold">✧</span><div><span className="stat-label">ACCURACY</span><strong>{accuracy ?? '—'}<small>%</small></strong></div><span className="stat-note">Across attempts</span></article>
