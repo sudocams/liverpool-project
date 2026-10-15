@@ -1,6 +1,6 @@
 import { useState } from 'react';
 
-export default function StudyConsent({ version, retentionDays = 0, previouslyConsented = false, actionError = '', onParticipate, onPractice, onWithdraw }) {
+export default function StudyConsent({ version, learnerCode = '', retentionDays = 0, previouslyConsented = false, actionError = '', onParticipate, onPractice, onWithdraw }) {
   const [accepted, setAccepted] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -29,19 +29,20 @@ export default function StudyConsent({ version, retentionDays = 0, previouslyCon
         <div className="eyebrow">PARTICIPANT INFORMATION · DRAFT</div>
         <h1>Choose how to use CyberWolf</h1>
         <p className="auth-description">This prototype is being evaluated as part of a study of cybersecurity learning. Taking part is your choice.</p>
+        {learnerCode && <p className="consent-version-note"><strong>Your learner code: {learnerCode}</strong><br />Save this with the password you chose. These let you sign back into the same account and progress later.</p>}
         {previouslyConsented && <p className="consent-version-note">The study information has changed since your earlier consent. Review this version before recording further study activity. Your earlier records remain governed by the consent you previously gave; you can withdraw below to delete them.</p>}
         <div className="consent-details">
           <h2>If you choose to participate</h2>
           <ul>
             <li>CyberWolf records challenge answers and scores, completion, randomized pre/post assessment scores by topic, active time while the learning page is visible and focused, whether feedback was AI-generated or guided, and adaptive recommendations shown to you.</li>
-            <li>Authorized admins can review per-learner progress using your pseudonymous sign-in handle, including assessment improvement, challenge and module completion, activity time, AI-feedback usage, and recommendation history. Your study events are stored under an internal random account key; event records do not contain your handle or password.</li>
+            <li>No name, email address, phone number, or personal ID is requested. Your learner code is pseudonymous. If you consent, authorized admins can review per-learner study measures including assessment improvement, challenge and module completion, activity time, AI-feedback usage, and recommendation history.</li>
             <li>{retentionDays > 0 ? `Study activity older than ${retentionDays} days is scheduled for automatic deletion. You can withdraw sooner to delete your saved study records.` : 'No automatic time-based deletion is configured in this prototype. You can withdraw at any time to delete your saved study records.'}</li>
             <li>If an external AI feedback provider is configured, the challenge context and selected answer may be sent to that provider. The final study information must name the provider and explain its data handling.</li>
             <li>The dashboard also provides group-level summaries. Questionnaire items use ratings only; there is no free-text box.</li>
-            <li>You can withdraw at any time. Withdrawal deletes your saved study progress, assessment results, and feedback ratings from this prototype.</li>
+            <li>You can withdraw at any time. Withdrawal deletes your saved learning progress, assessment results, and feedback ratings from this prototype.</li>
           </ul>
           <h2>If you choose not to participate</h2>
-          <p>You can still use the challenges in practice-only mode. Answers and progress stay only in the current browser session and are not saved as study records.</p>
+          <p>You can still use the challenges in practice mode. CyberWolf saves your scores, completed challenges, points, and recommendations to your pseudonymous learner profile so your learning progress survives browser data being cleared. These records are not included in study analytics unless you consent. Assessment results and active-time sessions are not collected in practice mode.</p>
           <p className="consent-draft-note">Draft information for implementation. Your supervisor and ethics process must approve the final participant information and consent wording before recruitment or research data collection.</p>
         </div>
         <form onSubmit={submit}>

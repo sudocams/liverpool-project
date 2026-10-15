@@ -9,14 +9,14 @@ import { recommendNextActivity } from './services/adaptiveEngine.js';
 import { learningPaths, pathChallengeIds, completedLearningPaths, learningPathProgress } from './content/learningPaths.js';
 import { updateGamification } from './services/gamification.js';
 import { generateChallengeFeedback } from './services/feedbackService.js';
-import { authenticateUser, clearResearchConsent, createUser, getUserById, hasAdminAccount, listResearchConsentedParticipants, setResearchConsent, validatePassword } from './services/authService.js';
+import { authenticateAdmin, authenticateUser, clearResearchConsent, createUser, getUserById, hasAdminAccount, listResearchConsentedParticipants, setLearnerPassword, setResearchConsent, validateAdminUsername, validatePassword } from './services/authService.js';
 import { attachSession, clearSessionCookie, createSession, makeSessionCookie, requireAuth, requireRole, requireStudyConsent } from './services/sessionService.js';
 import { createModule, deleteModule, getModule, listModules, seedModules, updateModule, validateModule } from './services/moduleStore.js';
 
 const app = express();
 const port = Number(process.env.PORT) || 4000;
 const allowedOrigin = process.env.FRONTEND_ORIGIN || 'http://localhost:5173';
-const studyInfoVersion = process.env.STUDY_INFO_VERSION || 'draft-3';
+const studyInfoVersion = process.env.STUDY_INFO_VERSION || 'draft-5';
 const assessmentMaxAttempts = Math.max(1, Number.parseInt(process.env.ASSESSMENT_MAX_ATTEMPTS || '3', 10) || 3);
 const dataRetentionDays = Math.max(0, Number.parseInt(process.env.DATA_RETENTION_DAYS || '0', 10) || 0);
 
@@ -42,8 +42,8 @@ app.post('/api/auth/register', async (req, res, next) => {
     const { password } = req.body ?? {};
     if (!validatePassword(password)) return res.status(400).json({ error: 'Use a password between 12 and 128 characters.' });
     const account = await createUser(password, 'learner');
-    res.setHeader('Set-Cookie', makeSessionCookie(createSession(account)));
-    return res.status(201).json({ handle: account.handle, role: account.role, message: 'Save this sign-in handle. It cannot be recovered because no contact details are collected.' });
+    res.setHeader('Set-Cookie', makeSessionCookie(createSession(account), account.role));
+    return res.status(201).json({ handle: account.handle, role: account.role, message: 'Save this learner code and the password you chose; no contact details are collected for account recovery.' });
   } catch (error) { return next(error); }
 });
 
@@ -51,10 +51,35 @@ app.post('/api/auth/login', async (req, res, next) => {
   try {
     const { handle, password } = req.body ?? {};
     const account = await authenticateUser(handle, password);
-    if (!account) return res.status(401).json({ error: 'The sign-in handle or password is incorrect.' });
-    res.setHeader('Set-Cookie', makeSessionCookie(createSession(account)));
+    if (!account || account.role !== 'learner') return res.status(401).json({ error: 'The learner code or password is incorrect.' });
+    res.setHeader('Set-Cookie', makeSessionCookie(createSession(account), account.role));
     return res.json({ handle: account.handle, role: account.role });
   } catch (error) { return next(error); }
+});
+
+app.post('/api/auth/learner-password', requireAuth, async (req, res, next) => {
+  try {
+    if (req.account.role !== 'learner') return res.status(403).json({ error: 'This option is for learner accounts.' });
+    const { password, passwordConfirm } = req.body ?? {};
+    if (password !== passwordConfirm) return res.status(400).json({ error: 'The passwords do not match.' });
+    if (!validatePassword(password)) return res.status(400).json({ error: 'Use a password between 12 and 128 characters.' });
+    if (!await setLearnerPassword(req.account.accountId, password)) return res.status(404).json({ error: 'Learner account not found.' });
+    return res.json({ credentialsConfigured: true });
+  } catch (error) { return next(error); }
+});
+
+app.post('/api/auth/admin-login', async (req, res, next) => {
+  try {
+    const { username, password } = req.body ?? {};
+    if (!validateAdminUsername(username)) return res.status(400).json({ error: 'Enter a valid admin username.' });
+    const account = await authenticateAdmin(username, password);
+    if (!account) return res.status(401).json({ error: 'The admin username or password is incorrect.' });
+    res.setHeader('Set-Cookie', makeSessionCookie(createSession(account), account.role));
+    return res.json({ handle: account.handle, username: account.username, role: account.role });
+  } catch (error) {
+    if (error.message.includes('already uses that admin username')) return res.status(409).json({ error: error.message });
+    return next(error);
+  }
 });
 
 app.post('/api/auth/logout', (_req, res) => {
@@ -62,7 +87,7 @@ app.post('/api/auth/logout', (_req, res) => {
   return res.status(204).end();
 });
 
-app.get('/api/auth/me', requireAuth, (req, res) => res.json({ handle: req.account.handle, role: req.account.role, researchConsent: req.account.researchConsent ?? { version: null, acceptedAt: null }, studyInfoVersion, dataRetentionDays }));
+app.get('/api/auth/me', requireAuth, (req, res) => res.json({ handle: req.account.handle, username: req.account.username ?? null, role: req.account.role, credentialsConfigured: req.account.credentialsConfigured === true, researchConsent: req.account.researchConsent ?? { version: null, acceptedAt: null }, studyInfoVersion, dataRetentionDays }));
 
 app.post('/api/research/consent', requireAuth, async (req, res, next) => {
   try {
@@ -85,15 +110,19 @@ app.delete('/api/research/consent', requireAuth, async (req, res, next) => {
 app.post('/api/auth/bootstrap-admin', async (req, res, next) => {
   try {
     const configuredKey = process.env.ADMIN_BOOTSTRAP_KEY;
-    const { setupKey, password } = req.body ?? {};
+    const { setupKey, username, password } = req.body ?? {};
     if (!configuredKey) return res.status(404).json({ error: 'Admin setup is not enabled on this server.' });
     if (await hasAdminAccount()) return res.status(409).json({ error: 'An admin account already exists.' });
     if (typeof setupKey !== 'string' || setupKey !== configuredKey) return res.status(403).json({ error: 'Invalid admin setup key.' });
+    if (!validateAdminUsername(username)) return res.status(400).json({ error: 'Admin username must be 3–32 letters, numbers, dots, underscores, or hyphens.' });
     if (!validatePassword(password)) return res.status(400).json({ error: 'Use a password between 12 and 128 characters.' });
-    const account = await createUser(password, 'admin');
-    res.setHeader('Set-Cookie', makeSessionCookie(createSession(account)));
-    return res.status(201).json({ handle: account.handle, role: account.role, message: 'Save this admin sign-in handle securely.' });
-  } catch (error) { return next(error); }
+    const account = await createUser(password, 'admin', username);
+    res.setHeader('Set-Cookie', makeSessionCookie(createSession(account), account.role));
+    return res.status(201).json({ handle: account.handle, username: account.username, role: account.role });
+  } catch (error) {
+    if (error.message.includes('already uses that admin username')) return res.status(409).json({ error: error.message });
+    return next(error);
+  }
 });
 
 app.get('/api/challenges', async (_req, res, next) => {
@@ -122,13 +151,13 @@ app.get('/api/learning-paths', async (_req, res, next) => {
   } catch (error) { return next(error); }
 });
 
-app.get('/api/progress', requireAuth, requireStudyConsent, async (req, res, next) => {
+app.get('/api/progress', requireAuth, async (req, res, next) => {
   try {
     return res.json(await getProgress(req.account.accountId));
   } catch (error) { return next(error); }
 });
 
-app.get('/api/recommendations', requireAuth, requireStudyConsent, async (req, res, next) => {
+app.get('/api/recommendations', requireAuth, async (req, res, next) => {
   try {
     const [progress, modules] = await Promise.all([getProgress(req.account.accountId), listModules()]);
     progress.completedPaths = completedLearningPaths(progress.completed);
@@ -393,7 +422,7 @@ app.get('/api/research/summary', requireRole('admin'), async (_req, res, next) =
   } catch (error) { return next(error); }
 });
 
-app.delete('/api/progress', requireAuth, requireStudyConsent, async (req, res, next) => {
+app.delete('/api/progress', requireAuth, async (req, res, next) => {
   try {
     await deleteProgress(req.account.accountId);
     return res.status(204).end();
@@ -461,9 +490,25 @@ app.post('/api/practice/answer', requireAuth, async (req, res, next) => {
     if (!challenge) return res.status(404).json({ error: 'Challenge not found.' });
     if (selectedOption < 0 || selectedOption >= challenge.options.length) return res.status(400).json({ error: 'selectedOption is out of range.' });
     if (hintsUsed > (challenge.hints?.length ?? 0)) return res.status(400).json({ error: 'hintsUsed is out of range.' });
+    const current = await getProgress(req.account.accountId);
+    const owningPath = learningPaths.find(path => path.modules.some(module => module.challengeIds.includes(challengeId)));
+    const completedPathIds = new Set(completedLearningPaths(current.completed));
+    if (owningPath && owningPath.prerequisites.some(id => !completedPathIds.has(id))) return res.status(409).json({ error: 'Complete the prerequisite learning path before starting this challenge.' });
+    const owningModuleIndex = owningPath?.modules.findIndex(module => module.challengeIds.includes(challengeId)) ?? -1;
+    if (owningModuleIndex > 0 && owningPath.modules.slice(0, owningModuleIndex).some(module => !module.challengeIds.every(id => current.completed.includes(id)))) return res.status(409).json({ error: 'Complete the earlier modules in this learning path before starting this challenge.' });
     const correct = selectedOption === challenge.answerIndex;
-    const points = correct ? Math.max(40, 100 - hintsUsed * 20) : 5;
-    return res.json({ correct, points, feedback: { text: challenge.explanation, source: 'guided' } });
+    const firstClear = correct && !current.completed.includes(challengeId);
+    const points = correct ? firstClear ? Math.max(40, 100 - hintsUsed * 20) : Math.max(10, 25 - hintsUsed * 5) : 5;
+    const modules = await listModules();
+    const attempt = { challengeId, topic: challenge.topic, correct, points, hintsUsed, durationSeconds: null, feedbackSource: 'guided', at: new Date().toISOString() };
+    const previousCompletedCount = current.completed.length;
+    let progress = { ...current, attempts: [...current.attempts, attempt], completed: correct && !current.completed.includes(challengeId) ? [...current.completed, challengeId] : current.completed };
+    progress.completedPaths = completedLearningPaths(progress.completed);
+    const recommendation = recommendNextActivity(progress, modules, learningPaths);
+    progress.progression = [...progress.progression, { rule: recommendation.rule, reason: recommendation.reason, recommendedChallengeId: recommendation.challengeId, at: attempt.at }];
+    progress = updateGamification(progress, modules, new Date(attempt.at), previousCompletedCount);
+    await saveProgress(req.account.accountId, progress);
+    return res.json({ correct, points, feedback: { text: challenge.explanation, source: 'guided' }, progress, recommendation });
   } catch (error) { return next(error); }
 });
 

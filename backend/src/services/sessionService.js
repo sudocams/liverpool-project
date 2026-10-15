@@ -6,20 +6,20 @@ if (process.env.NODE_ENV === 'production' && (!process.env.SESSION_SECRET || pro
 }
 const secret = process.env.SESSION_SECRET || randomBytes(32).toString('hex');
 const cookieName = 'cyberwolf_session';
-const sessionDurationSeconds = 60 * 60 * 8;
+const sessionDurationSeconds = role => role === 'learner' ? 60 * 60 * 24 * 30 : 60 * 60 * 8;
 
 function sign(payload) {
   return createHmac('sha256', secret).update(payload).digest('base64url');
 }
 
 export function createSession(account) {
-  const payload = Buffer.from(JSON.stringify({ sub: account.id, handle: account.handle, role: account.role, exp: Math.floor(Date.now() / 1000) + sessionDurationSeconds })).toString('base64url');
+  const payload = Buffer.from(JSON.stringify({ sub: account.id, handle: account.handle, username: account.username ?? null, role: account.role, exp: Math.floor(Date.now() / 1000) + sessionDurationSeconds(account.role) })).toString('base64url');
   return `${payload}.${sign(payload)}`;
 }
 
-export function makeSessionCookie(token) {
+export function makeSessionCookie(token, role = 'admin') {
   const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
-  return `${cookieName}=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${sessionDurationSeconds}${secure}`;
+  return `${cookieName}=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${sessionDurationSeconds(role)}${secure}`;
 }
 
 export function clearSessionCookie() {
@@ -42,7 +42,7 @@ function verifyToken(token) {
   try {
     const claims = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
     if (!claims.sub || !claims.handle || !['learner', 'admin'].includes(claims.role) || claims.exp < Math.floor(Date.now() / 1000)) return null;
-    return { accountId: claims.sub, handle: claims.handle, role: claims.role };
+    return { accountId: claims.sub, handle: claims.handle, username: claims.username ?? null, role: claims.role };
   } catch { return null; }
 }
 
@@ -56,7 +56,7 @@ export async function requireAuth(req, res, next) {
   try {
     const account = await getUserById(req.account.accountId);
     if (!account) return res.status(401).json({ error: 'This account is no longer active. Sign in again.' });
-    req.account = { ...req.account, role: account.role, researchConsent: account.researchConsent };
+    req.account = { ...req.account, username: account.username ?? req.account.username, role: account.role, credentialsConfigured: account.credentialsConfigured === true, researchConsent: account.researchConsent };
   } catch (error) { return next(error); }
   return next();
 }
@@ -70,7 +70,7 @@ export function requireRole(role) {
 }
 
 export function requireStudyConsent(req, res, next) {
-  const currentVersion = process.env.STUDY_INFO_VERSION || 'draft-3';
+  const currentVersion = process.env.STUDY_INFO_VERSION || 'draft-5';
   if (req.account?.role === 'admin' || (req.account?.researchConsent?.acceptedAt && req.account.researchConsent.version === currentVersion)) return next();
   return res.status(403).json({ error: 'Research participation is not enabled for this account. Choose to participate or continue in practice-only mode.' });
 }

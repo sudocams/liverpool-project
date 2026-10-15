@@ -2,8 +2,10 @@ import mongoose from 'mongoose';
 
 const userSchema = new mongoose.Schema({
   handle: { type: String, required: true, unique: true, index: true },
+  username: { type: String, unique: true, sparse: true, index: true, lowercase: true, trim: true, default: undefined },
   passwordSalt: { type: String, required: true },
   passwordHash: { type: String, required: true },
+  credentialsConfigured: { type: Boolean, default: false },
   role: { type: String, enum: ['learner', 'admin'], default: 'learner', required: true },
   researchConsent: {
     version: { type: String, default: null },

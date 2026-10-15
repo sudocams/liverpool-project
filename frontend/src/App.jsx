@@ -72,6 +72,9 @@ function App() {
   const [newAccountHandle, setNewAccountHandle] = useState('');
   const [practiceOnly, setPracticeOnly] = useState(false);
   const [showConsent, setShowConsent] = useState(false);
+  const [recoveryPassword, setRecoveryPassword] = useState('');
+  const [recoveryPasswordConfirm, setRecoveryPasswordConfirm] = useState('');
+  const [recoveryMessage, setRecoveryMessage] = useState('');
   const activityStartedAt = useRef(Date.now());
   const challenge = challenges.find(item => item.id === challengeId) ?? challenges[0];
   const totalPoints = useMemo(() => progress.attempts.reduce((sum, item) => sum + item.points, 0), [progress]);
@@ -138,15 +141,12 @@ function App() {
     if (!account) return undefined;
     let cancelled = false;
     setLoading(true);
-    const optedIn = account.role === 'admin' || hasCurrentConsent(account);
     const requests = [
       fetch('/api/challenges').then(response => { if (!response.ok) throw new Error('Could not load challenges.'); return response.json(); }),
       fetch('/api/learning-paths').then(response => { if (!response.ok) throw new Error('Could not load learning paths.'); return response.json(); }),
-    ];
-    if (optedIn) requests.push(
       fetch('/api/progress').then(response => { if (!response.ok) throw new Error('Could not load your progress.'); return response.json(); }),
       fetch('/api/recommendations').then(response => { if (!response.ok) throw new Error('Could not load your recommendation.'); return response.json(); }),
-    );
+    ];
     Promise.all(requests).then(([items, paths, savedProgress = blankProgress, nextStep = null]) => {
       if (cancelled) return;
       setChallenges(items);
@@ -160,6 +160,20 @@ function App() {
     }).finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, [account?.handle, account?.researchConsent?.acceptedAt]);
+
+  async function saveRecoveryPassword(event) {
+    event.preventDefault();
+    setRecoveryMessage('');
+    if (recoveryPassword !== recoveryPasswordConfirm) { setRecoveryMessage('The passwords do not match.'); return; }
+    try {
+      const response = await fetch('/api/auth/learner-password', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: recoveryPassword, passwordConfirm: recoveryPasswordConfirm }) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Could not save your password.');
+      setAccount(current => ({ ...current, credentialsConfigured: true }));
+      setRecoveryPassword(''); setRecoveryPasswordConfirm('');
+      setRecoveryMessage('Recovery password saved. Keep your learner code and password safe to access this progress later.');
+    } catch (error) { setRecoveryMessage(error.message); }
+  }
 
   async function signOut() {
     await fetch('/api/auth/logout', { method: 'POST' });
@@ -238,20 +252,9 @@ function App() {
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || 'Could not submit your answer.');
-      const practicePoints = !participating && result.correct && progress.completed.includes(challenge.id)
-        ? Math.max(10, 25 - hintsUsed * 5)
-        : result.points;
-      if (participating) {
-        setProgress(result.progress);
-        setRecommendation(result.recommendation);
-      } else {
-        const attempt = { challengeId: challenge.id, topic: challenge.topic, correct: result.correct, points: practicePoints, hintsUsed };
-        const completed = result.correct && !progress.completed.includes(challenge.id) ? [...progress.completed, challenge.id] : progress.completed;
-        setProgress(current => ({ ...current, attempts: [...current.attempts, attempt], completed }));
-        const next = challenges.find(item => !completed.includes(item.id));
-        setRecommendation(next ? { challengeId: next.id, topic: next.topic, message: `Continue with ${next.title}. This practice suggestion is not saved.`, reason: 'practice session only' } : { challengeId: challenge.id, topic: challenge.topic, message: 'You have completed every challenge in this session. You can review any module.', reason: 'practice session only' });
-      }
-      setFeedback({ correct: participating ? result.attempt.correct : result.correct, points: participating ? result.attempt.points : practicePoints, hintsUsed: participating ? result.attempt.hintsUsed ?? 0 : hintsUsed, explanation: result.feedback.text, feedbackSource: result.feedback.source });
+      setProgress(result.progress);
+      setRecommendation(result.recommendation);
+      setFeedback({ correct: result.attempt?.correct ?? result.correct, points: result.attempt?.points ?? result.points, hintsUsed: result.attempt?.hintsUsed ?? hintsUsed, explanation: result.feedback.text, feedbackSource: result.feedback.source });
     } catch (error) {
       setApiError(`${error.message} Check that the backend is running, then try again.`);
     } finally {
@@ -285,9 +288,9 @@ function App() {
   }
 
   if (!authChecked) return <main className="auth-loading">Connecting to CyberWolf…</main>;
-  if (!account) return <AuthScreen onAuthenticated={(signedInAccount, isNew) => { setAccount(signedInAccount); setNewAccountHandle(isNew ? signedInAccount.handle : ''); setApiError(''); }} />;
+  if (!account) return <AuthScreen onAuthenticated={(signedInAccount, isNew) => { setAccount(signedInAccount); setNewAccountHandle(isNew && signedInAccount.role === 'learner' ? signedInAccount.handle : ''); setApiError(''); }} />;
   if (account.role === 'learner' && (showConsent || (!practiceOnly && !hasCurrentConsent(account)))) {
-    return <StudyConsent version={account.studyInfoVersion || 'draft-3'} retentionDays={account.dataRetentionDays ?? 0} previouslyConsented={Boolean(account.researchConsent?.acceptedAt)} actionError={apiError} onParticipate={participate} onPractice={() => { setPracticeOnly(true); setShowConsent(false); }} onWithdraw={withdrawFromConsentScreen} />;
+    return <StudyConsent version={account.studyInfoVersion || 'draft-5'} learnerCode={newAccountHandle} retentionDays={account.dataRetentionDays ?? 0} previouslyConsented={Boolean(account.researchConsent?.acceptedAt)} actionError={apiError} onParticipate={participate} onPractice={() => { setPracticeOnly(true); setShowConsent(false); }} onWithdraw={withdrawFromConsentScreen} />;
   }
 
   return (
@@ -304,11 +307,12 @@ function App() {
       </aside>
 
       <main id="home" className="main-content">
-        <header className="topbar"><div className="breadcrumb">LEARN <span>/</span> {activeView.toUpperCase()}</div><div className="user-chip"><span className="avatar">{account.role === 'admin' ? 'A' : 'W'}</span><span>{account.handle} · {account.role}</span>{account.role === 'learner' && (hasCurrentConsent(account) ? <button className="logout-button" type="button" onClick={withdrawFromResearch}>Withdraw</button> : <button className="logout-button" type="button" onClick={() => setShowConsent(true)}>Join study</button>)}<button className="logout-button" type="button" onClick={signOut}>Sign out</button></div></header>
+        <header className="topbar"><div className="breadcrumb">LEARN <span>/</span> {activeView.toUpperCase()}</div><div className="user-chip"><span className="avatar">{account.role === 'admin' ? 'A' : 'W'}</span><span>{account.username ?? account.handle} · {account.role}</span>{account.role === 'learner' && (hasCurrentConsent(account) ? <button className="logout-button" type="button" onClick={withdrawFromResearch}>Withdraw</button> : <button className="logout-button" type="button" onClick={() => setShowConsent(true)}>Join study</button>)}<button className="logout-button" type="button" onClick={signOut}>Sign out</button></div></header>
         <section className="welcome-row"><div><div className="eyebrow"><span className="status-dot" /> YOUR CYBERSECURITY FIELD GUIDE</div><h1>Make the smart call.</h1><p className="subtitle">Real-world scenarios. Better instincts. One challenge at a time.</p></div><div className="streak-card"><span className="streak-icon">✦</span><div><small>YOUR POINTS</small><strong>{totalPoints} <span>XP</span></strong></div></div></section>
 
-        {newAccountHandle && <div className="new-handle-banner" role="status"><strong>Your sign-in handle is {newAccountHandle}</strong><span>Save it with your password. It cannot be recovered because CyberWolf does not collect contact details.</span><button type="button" onClick={() => setNewAccountHandle('')}>I’ve saved it</button></div>}
-        {practiceOnly && <div className="practice-status" role="status">Practice-only mode: answers are sent to CyberWolf for grading but are not saved; progress stays in this browser session. <button className="logout-button" type="button" onClick={() => setShowConsent(true)}>Review study information</button></div>}
+        {newAccountHandle && <div className="new-handle-banner" role="status"><strong>Your learner code: {newAccountHandle}</strong><span>Save this code with the password you chose. They let you sign back into the same server-saved progress after browser data is cleared or on another device.</span><button type="button" onClick={() => setNewAccountHandle('')}>Continue</button></div>}
+        {account.role === 'learner' && !account.credentialsConfigured && <form className="practice-status" onSubmit={saveRecoveryPassword}><strong>Set a recovery password to protect this progress</strong><span>This account was created before learner sign-in was added. Set a password now and save it with your learner code. No personal details are needed.</span><label className="auth-field">Password (12–128 characters)<input type="password" minLength="12" maxLength="128" autoComplete="new-password" value={recoveryPassword} onChange={event => setRecoveryPassword(event.target.value)} required /></label><label className="auth-field">Confirm password<input type="password" minLength="12" maxLength="128" autoComplete="new-password" value={recoveryPasswordConfirm} onChange={event => setRecoveryPasswordConfirm(event.target.value)} required /></label>{recoveryMessage && <span role="status">{recoveryMessage}</span>}<button className="primary-button" type="submit">Save recovery password</button></form>}
+        {practiceOnly && <div className="practice-status" role="status">Practice mode: your scores and completions are saved to your learner profile for progress continuity. Research analytics and activity-time tracking remain off unless you choose to participate. <button className="logout-button" type="button" onClick={() => setShowConsent(true)}>Review study information</button></div>}
         {apiError && <div className="api-error" role="alert">{apiError}</div>}
         {activeView === 'admin' && account.role === 'admin' ? <AdminPanel /> : activeView === 'evaluation' && (account.role === 'admin' || hasCurrentConsent(account)) ? <EvaluationPanel participant={account.role === 'learner'} consentedAt={account.researchConsent?.acceptedAt} /> : <>
         <section className="stats-grid" aria-label="Learning summary">
