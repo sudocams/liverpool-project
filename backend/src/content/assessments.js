@@ -59,6 +59,55 @@ const topicGroups = {
   },
 };
 
+// An equivalent-form pool lets each attempt sample three distinct questions per topic.
+const additionalQuestions = {
+  pre: {
+    Phishing: [{ id: 'pre-phish-c', prompt: 'A document-sharing alert uses a sender address with one extra letter in the company domain. What should you do?', options: ['Open it because the display name is familiar.', 'Visit the document service directly and report the suspicious message.', 'Reply asking the sender to resend it.', 'Download the attachment to inspect it.'], correctIndex: 1, explanation: 'A lookalike address is a warning sign; verify through the known service and report it.' }],
+    'Account security': [{ id: 'pre-password-c', prompt: 'A service lets you create a recovery code. What is a safer way to keep it?', options: ['Store it in the same account inbox.', 'Keep it in a protected password manager or other approved secure location.', 'Share it with a colleague.', 'Use it as your regular password.'], correctIndex: 1, explanation: 'Recovery codes should be protected separately from the account they recover.' }],
+    'Social engineering': [{ id: 'pre-social-c', prompt: 'A visitor says a colleague is expecting them but cannot be reached. What should you do?', options: ['Let them follow you in.', 'Use visitor verification procedures and contact the host or reception.', 'Ask them to show a business card.', 'Give them your access badge.'], correctIndex: 1, explanation: 'Follow the visitor process; a claim of familiarity does not replace verification.' }],
+    'Malware & downloads': [{ id: 'pre-malware-c', prompt: 'A free utility requests administrator access although its task should not need it. What is safest?', options: ['Grant access and remove it later.', 'Do not install it until the software and permissions are verified through an approved source.', 'Disable endpoint protection during setup.', 'Install it on a work device first.'], correctIndex: 1, explanation: 'Unexpected privileges are a warning; verify software provenance and need before installing.' }],
+    'Public Wi-Fi': [{ id: 'pre-wifi-c', prompt: 'A public hotspot redirects you to a page asking for your work email password. What should you do?', options: ['Enter it if the page has the venue logo.', 'Do not enter work credentials; verify the network and use a trusted connection.', 'Reuse an old password.', 'Ask another guest to sign in first.'], correctIndex: 1, explanation: 'A public network should not collect work credentials; use a verified trusted connection.' }],
+  },
+  post: {
+    Phishing: [{ id: 'post-phish-c', prompt: 'A cloud-storage warning asks you to review a shared file through a shortened link. What is safest?', options: ['Open it because cloud alerts are common.', 'Go to the cloud service directly and check shared files and alerts there.', 'Paste the link into a chat for others.', 'Enter credentials only if the page uses the company logo.'], correctIndex: 1, explanation: 'Check alerts by navigating to the known service rather than trusting a shortened link.' }],
+    'Account security': [{ id: 'post-password-c', prompt: 'A team member leaves and had access to a shared service credential. What should the team do?', options: ['Keep using it because the account still works.', 'Revoke their named access and rotate the shared credential if it was exposed to them.', 'Send the credential to the next team member.', 'Disable audit logging.'], correctIndex: 1, explanation: 'Remove access promptly and rotate shared secrets when access changes.' }],
+    'Social engineering': [{ id: 'post-social-c', prompt: 'A person claiming to be a regulator demands an immediate export of customer records. What should you do?', options: ['Send the data to avoid a penalty.', 'Verify the request and authority through approved legal and security channels.', 'Ask them to confirm by replying to the same email.', 'Upload the records to a public link.'], correctIndex: 1, explanation: 'Sensitive disclosure requires independent verification and established approval.' }],
+    'Malware & downloads': [{ id: 'post-malware-c', prompt: 'An update prompt appears inside a webpage while using a work application. What should you do?', options: ['Install it immediately.', 'Close the prompt and use the application or device’s official update mechanism.', 'Disable browser protections.', 'Download the update from a search advertisement.'], correctIndex: 1, explanation: 'Use an official updater or trusted developer source, not a webpage pop-up.' }],
+    'Public Wi-Fi': [{ id: 'post-wifi-c', prompt: 'A public network shows a certificate warning when you open a work site. What is safest?', options: ['Ignore the warning once.', 'Stop and use a trusted connection; report the warning if it persists.', 'Enter credentials and change them later.', 'Disable secure browsing.'], correctIndex: 1, explanation: 'Do not bypass certificate warnings for sensitive access; switch to a trusted connection.' }],
+  },
+  retention: {
+    Phishing: [{ id: 'ret-phish-c', prompt: 'A message says a cloud-storage quota is exceeded and requests a password to prevent deletion. What should you do?', options: ['Reply with the password to protect the files.', 'Check storage status from the official service and report the message.', 'Forward the alert to an outside address.', 'Open the link from a personal device.'], correctIndex: 1, explanation: 'Check account status through the official service; never provide a password by message.' }],
+    'Account security': [{ id: 'ret-password-c', prompt: 'You receive a security code you did not request. What should you do?', options: ['Share it with the person who calls next.', 'Do not share it; deny unexpected sign-in activity and secure the account.', 'Save it for your next login.', 'Post it to the team chat for review.'], correctIndex: 1, explanation: 'Unrequested codes can signal an attempted login; keep the code private and secure the account.' }],
+    'Social engineering': [{ id: 'ret-social-c', prompt: 'A coworker asks you to hold a secure door open because they forgot their badge. What is the correct response?', options: ['Let them in because you recognize them.', 'Ask them to use the approved access or visitor process.', 'Share your badge for the day.', 'Disable the door alarm.'], correctIndex: 1, explanation: 'Physical access controls apply even when someone seems familiar.' }],
+    'Malware & downloads': [{ id: 'ret-malware-c', prompt: 'A spreadsheet from an unknown sender asks you to enable macros to view an invoice. What should you do?', options: ['Enable macros but do not save.', 'Keep macros disabled, verify the sender independently, and report the file.', 'Upload it to a public scanner.', 'Forward it to your personal email.'], correctIndex: 1, explanation: 'Do not enable active content in unexpected files; verify and report through approved channels.' }],
+    'Public Wi-Fi': [{ id: 'ret-wifi-c', prompt: 'A public hotspot disconnects and reconnects with a slightly different name. What should you do?', options: ['Reconnect because the signal is stronger.', 'Verify the correct network with the venue and avoid sensitive work until confirmed.', 'Use the network for banking only.', 'Turn off the device firewall.'], correctIndex: 1, explanation: 'A similar network name may be an impersonation; verify before reconnecting.' }],
+  },
+  transfer: {
+    Phishing: [
+      { id: 'tr-phish-b', prompt: 'A job applicant sends a portfolio link from an unfamiliar file-hosting service, and your browser requests a sign-in. What should you do?', options: ['Sign in using your work account.', 'Do not enter credentials; use an approved way to inspect the file and report concerns.', 'Ask a colleague to sign in for you.', 'Download it on a personal device.'], correctIndex: 1, explanation: 'Unexpected file links should not prompt work credentials; use approved review channels.' },
+      { id: 'tr-phish-c', prompt: 'A supplier’s invoice arrives in an ongoing email thread, but the reply-to address differs. What is safest?', options: ['Pay it because the thread is genuine.', 'Verify the invoice and payment details using a known supplier contact method.', 'Reply to the changed address.', 'Forward the thread to a personal inbox.'], correctIndex: 1, explanation: 'Compromised threads can carry fraudulent changes; verify payment details out of band.' },
+    ],
+    'Account security': [
+      { id: 'tr-password-b', prompt: 'A phone used for account MFA is lost while travelling. What should the learner do first?', options: ['Ask a stranger to receive a code.', 'Use the service’s official recovery process and revoke the lost device where possible.', 'Turn off all account protections.', 'Reuse a coworker’s account.'], correctIndex: 1, explanation: 'Use official recovery and revoke a lost authenticator device.' },
+      { id: 'tr-password-c', prompt: 'An employee receives a password-manager vault sharing invitation they did not expect. What is safest?', options: ['Accept it to check the contents.', 'Decline and verify with the sender through a known channel.', 'Forward it to the whole team.', 'Enter their master password in the invitation page.'], correctIndex: 1, explanation: 'Unexpected sharing invitations should be verified independently before opening.' },
+    ],
+    'Social engineering': [
+      { id: 'tr-social-b', prompt: 'A caller claims to be conducting an audit and asks you to read out a badge number and access code. What should you do?', options: ['Provide them because audits are confidential.', 'Decline and verify the audit through the organization’s established contact.', 'Give only the badge number.', 'Ask them to call back from a private number.'], correctIndex: 1, explanation: 'Verify audit requests through established channels and never disclose access codes.' },
+      { id: 'tr-social-c', prompt: 'A colleague’s social account posts an urgent request for a company gift card. What is safest?', options: ['Buy it because the post is from their account.', 'Contact the colleague using a separate known channel before acting.', 'Comment asking for their password.', 'Send a small amount first.'], correctIndex: 1, explanation: 'Accounts can be compromised; confirm unusual requests out of band.' },
+    ],
+    'Malware & downloads': [
+      { id: 'tr-malware-b', prompt: 'A browser extension for meeting notes asks to read all page content and clipboard data. What should you do?', options: ['Approve it because note-taking needs access.', 'Check whether the permissions are necessary and use an approved tool only.', 'Install it in every browser profile.', 'Disable endpoint protection before installation.'], correctIndex: 1, explanation: 'Grant only justified permissions and follow software approval policy.' },
+      { id: 'tr-malware-c', prompt: 'A USB drive found in a meeting room is labelled “presentation”. What should you do?', options: ['Plug it in to identify its owner.', 'Give it to IT or security according to policy; do not connect it.', 'Try it on a spare laptop.', 'Take it home to inspect it.'], correctIndex: 1, explanation: 'Unknown removable media should not be connected to an endpoint.' },
+    ],
+    'Public Wi-Fi': [
+      { id: 'tr-wifi-b', prompt: 'A public charging station offers a USB port while your device battery is low. What is safer?', options: ['Connect and approve all prompts.', 'Use a wall charger or power-only adapter and avoid data connections.', 'Turn on file sharing.', 'Unlock the device before plugging in.'], correctIndex: 1, explanation: 'Avoid untrusted USB data connections; use a power-only option.' },
+      { id: 'tr-wifi-c', prompt: 'A coworking space asks you to install a root certificate to reach its guest portal. What should you do?', options: ['Install it because the workspace is reputable.', 'Verify the requirement with staff and your organization before installing; use an alternative trusted connection if unsure.', 'Install it only on a work laptop.', 'Disable certificate checks instead.'], correctIndex: 1, explanation: 'Root certificates can inspect traffic; verify the source and organizational approval first.' },
+    ],
+  },
+};
+
+export const assessmentTopics = Object.keys(topicGroups.pre);
+
 function shuffled(items) {
   const result = [...items];
   for (let index = result.length - 1; index > 0; index -= 1) {
@@ -69,9 +118,9 @@ function shuffled(items) {
 }
 
 export function getAssessment(phase) {
-  const groups = topicGroups[phase];
+  const groups = getTopicGroups(phase);
   if (!groups) return null;
-  return shuffled(Object.entries(groups).map(([topic, questions]) => ({ ...questions[Math.floor(Math.random() * questions.length)], topic }))).map(question => ({
+  return shuffled(Object.entries(groups).flatMap(([topic, questions]) => shuffled(questions).slice(0, 3).map(question => ({ ...question, topic })))).map(question => ({
     id: question.id,
     topic: question.topic,
     prompt: question.prompt,
@@ -79,7 +128,12 @@ export function getAssessment(phase) {
   }));
 }
 
-function allQuestions(phase) { return Object.entries(topicGroups[phase] ?? {}).flatMap(([topic, questions]) => questions.map(question => ({ ...question, topic }))); }
+function getTopicGroups(phase) {
+  if (!topicGroups[phase]) return null;
+  return Object.fromEntries(Object.entries(topicGroups[phase]).map(([topic, questions]) => [topic, [...questions, ...(additionalQuestions[phase]?.[topic] ?? [])]]));
+}
+
+function allQuestions(phase) { return Object.entries(getTopicGroups(phase) ?? {}).flatMap(([topic, questions]) => questions.map(question => ({ ...question, topic }))); }
 
 export function scoreAssessment(phase, answers) {
   const questions = allQuestions(phase);
@@ -96,15 +150,15 @@ export function scoreAssessment(phase, answers) {
 
 export function isAssessmentAnswerValid(phase, answers) {
   const questions = allQuestions(phase);
-  if (!questions.length || !Array.isArray(answers) || answers.length !== questions.length) return false;
+  if (!questions.length || !Array.isArray(answers) || answers.length !== Object.keys(topicGroups[phase] ?? {}).length * 3) return false;
   const byId = new Map(questions.map(question => [question.id, question]));
   const seen = new Set();
-  const topics = new Set();
+  const topicCounts = new Map();
   return answers.every(answer => {
     const question = byId.get(answer?.questionId);
-    if (!question || seen.has(question.id) || topics.has(question.topic) || typeof answer.selectedOption !== 'string' || !question.options.includes(answer.selectedOption)) return false;
+    if (!question || seen.has(question.id) || typeof answer.selectedOption !== 'string' || !question.options.includes(answer.selectedOption)) return false;
     seen.add(question.id);
-    topics.add(question.topic);
+    topicCounts.set(question.topic, (topicCounts.get(question.topic) ?? 0) + 1);
     return true;
-  });
+  }) && Object.keys(topicGroups[phase]).every(topic => topicCounts.get(topic) === 3);
 }

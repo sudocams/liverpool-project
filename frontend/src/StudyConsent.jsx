@@ -34,11 +34,11 @@ export default function StudyConsent({ version, learnerCode = '', retentionDays 
         <div className="consent-details">
           <h2>If you choose to participate</h2>
           <ul>
-            <li>CyberWolf records challenge answers and scores, completion, randomized pre/post assessment scores by topic, active time while the learning page is visible and focused, whether feedback was AI-generated or guided, and adaptive recommendations shown to you.</li>
+            <li>CyberWolf records challenge answers and scores, completion, randomized pre-test, post-test, transfer, and delayed-retention results across five cybersecurity topics (three questions per topic and stage), assessment dates and durations, active time while the learning page is visible and focused, whether feedback was AI-generated or guided, and adaptive recommendations shown to you.</li>
             <li>No name, email address, phone number, or personal ID is requested. Your learner code is pseudonymous. If you consent, authorized admins can review per-learner study measures including assessment improvement, challenge and module completion, activity time, AI-feedback usage, and recommendation history.</li>
             <li>{retentionDays > 0 ? `Study activity older than ${retentionDays} days is scheduled for automatic deletion. You can withdraw sooner to delete your saved study records.` : 'No automatic time-based deletion is configured in this prototype. You can withdraw at any time to delete your saved study records.'}</li>
             <li>If an external AI feedback provider is configured, the challenge context and selected answer may be sent to that provider. The final study information must name the provider and explain its data handling.</li>
-            <li>The dashboard also provides group-level summaries. Questionnaire items use ratings only; there is no free-text box.</li>
+            <li>The dashboard provides group-level summaries. Researchers may also enter assessment scores for a classroom comparison group using assigned pseudonymous codes; no names or contact details are entered. Questionnaire items use ratings only; there is no free-text box.</li>
             <li>You can withdraw at any time. Withdrawal deletes your saved learning progress, assessment results, and feedback ratings from this prototype.</li>
           </ul>
           <h2>If you choose not to participate</h2>

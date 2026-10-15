@@ -29,9 +29,9 @@ export default function EvaluationPanel({ participant = true, consentedAt = null
   }
 
   async function refreshRetentionSchedule() {
-    const retentionResponse = await fetch('/api/assessments/retention');
+    const retentionResponse = await fetch('/api/assessments/retention/status');
     const retentionData = await retentionResponse.json();
-    setRetentionSchedule({ delayDays: retentionData.delayDays ?? 21, eligibleAt: retentionData.eligibleAt ?? null, available: retentionResponse.ok });
+    setRetentionSchedule({ delayDays: retentionData.delayDays ?? 21, eligibleAt: retentionData.eligibleAt ?? null, available: retentionResponse.ok && retentionData.available === true });
   }
 
   useEffect(() => {
@@ -131,23 +131,26 @@ export default function EvaluationPanel({ participant = true, consentedAt = null
   const eligibleAssessments = assessments.filter(item => !participant || !consentedAt || new Date(item.at) >= new Date(consentedAt));
   const phases = ['pre', 'post', 'transfer', 'retention'];
   const phaseNames = { pre: 'Pre-test', post: 'Post-test', transfer: 'Transfer test', retention: 'Delayed retention' };
+  const latestPostAssessment = eligibleAssessments.filter(item => item.phase === 'post' && (postUnlocked && (!postEligibleAt || new Date(item.at).getTime() >= postEligibleAt))).sort((a, b) => new Date(b.at) - new Date(a.at))[0];
   const latest = Object.fromEntries(phases.map(itemPhase => [
     itemPhase,
-    eligibleAssessments.filter(item => item.phase === itemPhase && (itemPhase !== 'post' || (postUnlocked && (!postEligibleAt || new Date(item.at).getTime() >= postEligibleAt)))).sort((a, b) => new Date(b.at) - new Date(a.at))[0],
+    eligibleAssessments.filter(item => item.phase === itemPhase
+      && (itemPhase !== 'post' || (postUnlocked && (!postEligibleAt || new Date(item.at).getTime() >= postEligibleAt)))
+      && (!['retention', 'transfer'].includes(itemPhase) || (latestPostAssessment && new Date(item.at) >= new Date(latestPostAssessment.at)))).sort((a, b) => new Date(b.at) - new Date(a.at))[0],
   ]));
   const retentionEligibleAt = latest.post ? new Date(new Date(latest.post.at).getTime() + retentionSchedule.delayDays * 86400000) : null;
   const topicProgress = [...new Set(phases.flatMap(itemPhase => latest[itemPhase]?.answers?.map(answer => answer.topic) ?? []))].map(topic => {
     const scores = Object.fromEntries(phases.map(itemPhase => {
-      const answer = latest[itemPhase]?.answers?.find(item => item.topic === topic);
-      return [itemPhase, answer ? answer.correct : null];
+      const answersForTopic = latest[itemPhase]?.answers?.filter(item => item.topic === topic) ?? [];
+      return [itemPhase, answersForTopic.length ? Math.round(answersForTopic.filter(item => item.correct).length / answersForTopic.length * 100) : null];
     }));
     return { topic, ...scores };
   });
 
   return (
     <section className="evaluation-view">
-      <div className="section-heading evaluation-heading"><div><div className="eyebrow">RESEARCH EVALUATION</div><h2>Knowledge check</h2></div><span className="module-count">PRE / POST ASSESSMENT</span></div>
-      <p className="evaluation-intro">Complete the pre-test, post-test, a transfer test with unfamiliar scenarios, and a delayed retention test scheduled three weeks after the post-test.</p>
+      <div className="section-heading evaluation-heading"><div><div className="eyebrow">RESEARCH EVALUATION</div><h2>Knowledge check</h2></div><span className="module-count">4 ASSESSMENT STAGES</span></div>
+      <p className="evaluation-intro">Complete the pre-test, post-test, a transfer test with unfamiliar scenarios, and a delayed retention test scheduled {retentionSchedule.delayDays} days after the post-test.</p>
       {error && <div className="api-error" role="alert">{error}</div>}
       {requiredPhase && <div className="assessment-required-notice" role="status"><strong>{requiredPhase === 'pre' ? 'Pre-test required before training' : 'Post-test required to finish'}</strong><span>{requiredPhase === 'pre' ? 'Complete every question below before you can start the challenges. This also applies to existing learners who have not taken the pre-test.' : 'All scenarios are complete. Submit the post-test to finish your learning campaign.'}</span></div>}
 
@@ -161,10 +164,10 @@ export default function EvaluationPanel({ participant = true, consentedAt = null
           <legend><span className="question-number">{String(index + 1).padStart(2, '0')}</span><span>{question.prompt}</span></legend>
           {question.options.map((option, optionIndex) => <label className={`assessment-option${answers[question.id] === option ? ' selected' : ''}`} key={`${question.id}-${optionIndex}`}><input type="radio" name={question.id} value={option} checked={answers[question.id] === option} onChange={() => setAnswers(current => ({ ...current, [question.id]: option }))} /><span>{option}</span></label>)}
         </fieldset>)}
-        <div className="assessment-submit-row"><span className="hint">{Object.keys(answers).length} of {questions.length} answered · one randomized question per topic</span><button className="primary-button" type="submit" disabled={busy || Object.keys(answers).length !== questions.length}>{busy ? 'Submitting…' : 'Submit assessment →'}</button></div>
+        <div className="assessment-submit-row"><span className="hint">{Object.keys(answers).length} of {questions.length} answered · three randomized questions per topic</span><button className="primary-button" type="submit" disabled={busy || Object.keys(answers).length !== questions.length}>{busy ? 'Submitting…' : 'Submit assessment →'}</button></div>
       </form>}
 
-      {topicProgress.length > 0 && <section className="assessment-topic-progress"><h3>Topic scores across assessments</h3><div className="topic-analysis-list">{topicProgress.map(topic => <div className="topic-analysis-row" key={topic.topic}><b>{topic.topic}</b>{phases.map(itemPhase => <span key={itemPhase}>{phaseNames[itemPhase]}: {topic[itemPhase] == null ? '—' : topic[itemPhase] ? 'correct' : 'missed'}</span>)}</div>)}</div></section>}
+      {topicProgress.length > 0 && <section className="assessment-topic-progress"><h3>Topic scores across assessments</h3><div className="topic-analysis-list">{topicProgress.map(topic => <div className="topic-analysis-row" key={topic.topic}><b>{topic.topic}</b>{phases.map(itemPhase => <span key={itemPhase}>{phaseNames[itemPhase]}: {topic[itemPhase] == null ? '—' : `${topic[itemPhase]}%`}</span>)}</div>)}</div></section>}
 
       {result && <div className="assessment-result" role="status"><div className="result-score"><span>{phaseNames[phase].toUpperCase()} RESULT</span><strong>{result.score}<small> / {result.total}</small></strong><p>{Math.round(result.score / result.total * 100)}% correct</p></div><div className="result-explanations"><h3>Answer review</h3>{result.results.map((answer, index) => <div className="answer-review" key={answer.questionId}><span className={answer.correct ? 'review-correct' : 'review-incorrect'}>{answer.correct ? '✓' : '↻'}</span><p><b>{index + 1}. {answer.topic}</b><small>{answer.explanation}</small></p></div>)}<button className="secondary-button" type="button" onClick={() => { setPhase(null); setResult(null); }}>Back to evaluation</button></div></div>}
 

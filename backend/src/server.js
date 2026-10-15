@@ -3,7 +3,7 @@ import { randomInt, randomUUID } from 'node:crypto';
 import cors from 'cors';
 import express from 'express';
 import mongoose from 'mongoose';
-import { getAssessment, isAssessmentAnswerValid, scoreAssessment } from './content/assessments.js';
+import { assessmentTopics, getAssessment, isAssessmentAnswerValid, scoreAssessment } from './content/assessments.js';
 import { getScenarioRemediation } from './content/remediation.js';
 import { getProgress, saveProgress, deleteProgress, listProgressForAccounts, pruneExpiredProgress, startActivitySession, heartbeatActivitySession, endActivitySession } from './services/progressStore.js';
 import { recommendNextActivity } from './services/adaptiveEngine.js';
@@ -13,11 +13,12 @@ import { generateChallengeFeedback } from './services/feedbackService.js';
 import { adminResetLearnerPassword, authenticateAdmin, authenticateUser, clearResearchConsent, createUser, getUserById, hasAdminAccount, listLearnersForAdmin, listResearchConsentedParticipants, renameLearnerCode, requestLearnerPasswordReset, setLearnerPassword, setResearchConsent, validateAdminUsername, validatePassword } from './services/authService.js';
 import { attachSession, clearSessionCookie, createSession, makeSessionCookie, requireAuth, requireRole, requireStudyConsent } from './services/sessionService.js';
 import { createModule, deleteModule, getModule, listModules, seedModules, updateModule, validateModule } from './services/moduleStore.js';
+import { deleteClassroomComparisonRecord, listClassroomComparisonRecords, saveClassroomComparisonPhase } from './services/classroomComparisonStore.js';
 
 const app = express();
 const port = Number(process.env.PORT) || 4000;
 const allowedOrigin = process.env.FRONTEND_ORIGIN || 'http://localhost:5173';
-const studyInfoVersion = process.env.STUDY_INFO_VERSION || 'draft-5';
+const studyInfoVersion = process.env.STUDY_INFO_VERSION || 'draft-6';
 const assessmentMaxAttempts = Math.max(1, Number.parseInt(process.env.ASSESSMENT_MAX_ATTEMPTS || '3', 10) || 3);
 const retentionDelayDays = Math.max(14, Number.parseInt(process.env.RETENTION_TEST_DELAY_DAYS || '21', 10) || 21);
 const dataRetentionDays = Math.max(0, Number.parseInt(process.env.DATA_RETENTION_DAYS || '0', 10) || 0);
@@ -37,8 +38,19 @@ function durationSeconds(value) {
   return Number.isInteger(value) && value >= 0 ? Math.min(value, 7200) : 0;
 }
 
-function hasCompletedAssessment(progress, phase) {
-  return (progress.assessments ?? []).some(assessment => assessment.phase === phase);
+function hasCompletedAssessment(progress, phase, fromTime = null) {
+  return (progress.assessments ?? []).some(assessment => assessment.phase === phase && (fromTime === null || new Date(assessment.at).getTime() >= fromTime));
+}
+
+function currentStudyStart(account) {
+  return account.researchConsent?.version === studyInfoVersion && account.researchConsent?.acceptedAt
+    ? new Date(account.researchConsent.acceptedAt).getTime()
+    : null;
+}
+
+function latestPostAssessment(progress, account) {
+  const studyStart = currentStudyStart(account);
+  return (progress.assessments ?? []).filter(item => item.phase === 'post' && (studyStart === null || new Date(item.at).getTime() >= studyStart)).sort((a, b) => new Date(b.at) - new Date(a.at))[0];
 }
 
 function scenarioCompletionTime(progress, modules) {
@@ -51,15 +63,23 @@ function scenarioCompletionTime(progress, modules) {
   return Math.max(...firstClearTimes);
 }
 
-function postTestCompletedAfterScenarios(progress, modules) {
+function postTestCompletedAfterScenarios(progress, modules, studyStart = null) {
   const allScenariosCompletedAt = scenarioCompletionTime(progress, modules);
-  return allScenariosCompletedAt !== null && (progress.assessments ?? []).some(assessment => assessment.phase === 'post' && new Date(assessment.at).getTime() >= allScenariosCompletedAt);
+  return allScenariosCompletedAt !== null && (progress.assessments ?? []).some(assessment => assessment.phase === 'post' && new Date(assessment.at).getTime() >= allScenariosCompletedAt && (studyStart === null || new Date(assessment.at).getTime() >= studyStart));
 }
 
-async function learnerChallengeGateError(progress) {
-  if (!hasCompletedAssessment(progress, 'pre')) return 'Complete the pre-test before attempting any learning scenarios.';
+function retentionTestStatus(progress, account) {
+  const latestPost = latestPostAssessment(progress, account);
+  if (!latestPost) return { available: false, eligibleAt: null, delayDays: retentionDelayDays };
+  const eligibleAt = new Date(new Date(latestPost.at).getTime() + retentionDelayDays * 86400000);
+  return { available: Date.now() >= eligibleAt.getTime(), eligibleAt: eligibleAt.toISOString(), delayDays: retentionDelayDays };
+}
+
+async function learnerChallengeGateError(progress, account) {
+  const studyStart = currentStudyStart(account);
+  if (!hasCompletedAssessment(progress, 'pre', studyStart)) return 'Complete the pre-test before attempting any learning scenarios.';
   const modules = await listModules();
-  if (modules.length && modules.every(module => progress.completed.includes(module.id)) && !postTestCompletedAfterScenarios(progress, modules)) {
+  if (modules.length && modules.every(module => progress.completed.includes(module.id)) && !postTestCompletedAfterScenarios(progress, modules, studyStart)) {
     return 'You have completed every scenario. Complete the post-test to finish the learning path.';
   }
   return null;
@@ -239,10 +259,10 @@ app.get('/api/assessments/:phase', requireAuth, async (req, res, next) => {
   if (!['pre', 'post', 'retention', 'transfer'].includes(req.params.phase)) return res.status(404).json({ error: 'Unknown assessment phase.' });
   const phase = req.params.phase;
   const progress = await getProgress(req.account.accountId);
-  const latestPost = (progress.assessments ?? []).filter(item => item.phase === 'post').sort((a, b) => new Date(b.at) - new Date(a.at))[0];
+  const latestPost = latestPostAssessment(progress, req.account);
   if (phase === 'post') {
     const modules = await listModules();
-    if (!hasCompletedAssessment(progress, 'pre') || modules.some(module => !progress.completed.includes(module.id))) return res.status(409).json({ error: 'Complete the pre-test and every learning scenario before taking the post-test.' });
+    if (!hasCompletedAssessment(progress, 'pre', currentStudyStart(req.account)) || modules.some(module => !progress.completed.includes(module.id))) return res.status(409).json({ error: 'Complete the pre-test and every learning scenario before taking the post-test.' });
   }
   if (phase === 'transfer' && !latestPost) return res.status(409).json({ error: 'Complete the post-test before the transfer assessment.' });
   if (phase === 'retention') {
@@ -256,22 +276,27 @@ app.get('/api/assessments/:phase', requireAuth, async (req, res, next) => {
   } catch (error) { return next(error); }
 });
 
+app.get('/api/assessments/retention/status', requireAuth, async (req, res, next) => {
+  try { return res.json(retentionTestStatus(await getProgress(req.account.accountId), req.account)); }
+  catch (error) { return next(error); }
+});
+
 app.post('/api/assessments', requireAuth, async (req, res, next) => {
   try {
     const { phase, answers } = req.body ?? {};
     if (!['pre', 'post', 'retention', 'transfer'].includes(phase)) return res.status(400).json({ error: 'Choose a valid assessment phase.' });
-    if (!isAssessmentAnswerValid(phase, answers)) return res.status(400).json({ error: 'Submit one valid answer for each assessment topic.' });
+    if (!isAssessmentAnswerValid(phase, answers)) return res.status(400).json({ error: 'Submit three valid answers for each assessment topic.' });
     const result = scoreAssessment(phase, answers);
     const current = await getProgress(req.account.accountId);
     let postEligibilityTime = null;
     if (phase === 'post') {
-      if (!hasCompletedAssessment(current, 'pre')) return res.status(409).json({ error: 'Complete the pre-test before the post-test.' });
+      if (!hasCompletedAssessment(current, 'pre', currentStudyStart(req.account))) return res.status(409).json({ error: 'Complete the pre-test before the post-test.' });
       const modules = await listModules();
       if (modules.some(module => !current.completed.includes(module.id))) return res.status(409).json({ error: 'Complete all learning scenarios before taking the post-test.' });
       postEligibilityTime = scenarioCompletionTime(current, modules);
       if (postEligibilityTime === null) return res.status(409).json({ error: 'Finish each scenario successfully before taking the post-test.' });
     }
-    const latestPost = (current.assessments ?? []).filter(item => item.phase === 'post').sort((a, b) => new Date(b.at) - new Date(a.at))[0];
+    const latestPost = latestPostAssessment(current, req.account);
     if (phase === 'transfer' && !latestPost) return res.status(409).json({ error: 'Complete the post-test before the transfer assessment.' });
     if (phase === 'retention') {
       if (!latestPost) return res.status(409).json({ error: 'Complete the post-test before the delayed retention assessment.' });
@@ -343,9 +368,62 @@ app.post('/api/research/feedback', requireAuth, requireStudyConsent, async (req,
   } catch (error) { return next(error); }
 });
 
+app.get('/api/admin/classroom-comparison', requireRole('admin'), async (_req, res, next) => {
+  try { return res.json(await listClassroomComparisonRecords()); }
+  catch (error) { return next(error); }
+});
+
+app.get('/api/admin/classroom-comparison/instrument/:phase', requireRole('admin'), (req, res) => {
+  const questions = getAssessment(req.params.phase);
+  if (!questions) return res.status(404).json({ error: 'Unknown assessment phase.' });
+  return res.json({ phase: req.params.phase, questions });
+});
+
+app.put('/api/admin/classroom-comparison/:code/:phase', requireRole('admin'), async (req, res, next) => {
+  try {
+    const code = req.params.code.trim().toLowerCase();
+    const phase = req.params.phase;
+    if (!/^class-[a-z0-9-]{1,24}$/.test(code)) return res.status(400).json({ error: 'Use a pseudonymous classroom code such as class-001. Do not enter a learner name or contact detail.' });
+    if (!['pre', 'post', 'retention', 'transfer'].includes(phase)) return res.status(400).json({ error: 'Choose a valid assessment phase.' });
+    const scores = req.body?.scores;
+    if (!scores || typeof scores !== 'object' || assessmentTopics.some(topic => !scores[topic] || !Number.isInteger(scores[topic].correct) || scores[topic].correct < 0 || scores[topic].correct > 3)) {
+      return res.status(400).json({ error: 'Enter a correct-answer count from 0 to 3 for every topic.' });
+    }
+    const completedAt = req.body?.completedAt ? new Date(req.body.completedAt) : new Date();
+    if (!Number.isFinite(completedAt.getTime()) || completedAt.getTime() > Date.now()) return res.status(400).json({ error: 'Assessment date must be a valid date that is not in the future.' });
+    const existing = (await listClassroomComparisonRecords()).find(record => record.code === code);
+    const previousStages = Object.fromEntries((existing?.phases ?? []).map(item => [item.phase, item]));
+    const day = date => new Date(date).toISOString().slice(0, 10);
+    if (phase === 'post' && !previousStages.pre) return res.status(409).json({ error: 'Record the classroom pre-test before its post-test.' });
+    if (phase === 'post' && day(completedAt) < day(previousStages.pre.completedAt)) return res.status(409).json({ error: 'Post-test date must be on or after the classroom pre-test date.' });
+    if (phase === 'transfer' && (!previousStages.post || day(completedAt) < day(previousStages.post.completedAt))) return res.status(409).json({ error: 'Record the classroom post-test first; transfer testing must be on or after it.' });
+    if (phase === 'retention') {
+      if (!previousStages.post) return res.status(409).json({ error: 'Record the classroom post-test before its delayed retention test.' });
+      const eligibleDay = day(new Date(new Date(previousStages.post.completedAt).getTime() + retentionDelayDays * 86400000));
+      if (day(completedAt) < eligibleDay) return res.status(409).json({ error: `The classroom retention test must be at least ${retentionDelayDays} days after post-test.` });
+    }
+    if (phase === 'pre' && previousStages.post && day(completedAt) > day(previousStages.post.completedAt)) return res.status(409).json({ error: 'Pre-test date must be on or before the classroom post-test date.' });
+    const saved = await saveClassroomComparisonPhase(code, {
+      phase,
+      scores: assessmentTopics.map(topic => ({ topic, correct: scores[topic].correct, total: 3 })),
+      completedAt,
+    });
+    return res.json(saved);
+  } catch (error) { return next(error); }
+});
+
+app.delete('/api/admin/classroom-comparison/:code', requireRole('admin'), async (req, res, next) => {
+  try {
+    const removed = await deleteClassroomComparisonRecord(req.params.code.trim().toLowerCase());
+    if (!removed) return res.status(404).json({ error: 'Classroom comparison record not found.' });
+    return res.status(204).end();
+  } catch (error) { return next(error); }
+});
+
 app.get('/api/research/summary', requireRole('admin'), async (_req, res, next) => {
   try {
-    const participants = await listResearchConsentedParticipants();
+    const participants = await listResearchConsentedParticipants(studyInfoVersion);
+    const classroomRecords = await listClassroomComparisonRecords();
     const participantDates = new Map(participants.map(item => [item.id, new Date(item.acceptedAt).getTime()]));
     const participantIds = participants.map(item => item.id);
     const storedProgress = await listProgressForAccounts(participantIds);
@@ -391,6 +469,11 @@ app.get('/api/research/summary', requireRole('admin'), async (_req, res, next) =
       for (const assessment of learner.assessments) {
         if (!latestByPhase[assessment.phase] || new Date(assessment.at) > new Date(latestByPhase[assessment.phase].at)) latestByPhase[assessment.phase] = assessment;
       }
+      if (latestByPhase.post) {
+        for (const followupPhase of ['retention', 'transfer']) {
+          if (latestByPhase[followupPhase] && new Date(latestByPhase[followupPhase].at) < new Date(latestByPhase.post.at)) delete latestByPhase[followupPhase];
+        }
+      }
       const completedIds = new Set(challengeCatalog.map(module => module.id).filter(id => learner.completed.includes(id)));
       const rank = [{ name: 'Rookie', threshold: 0 }, { name: 'Scout', threshold: 1 }, { name: 'Analyst', threshold: 5 }, { name: 'Specialist', threshold: 10 }, { name: 'Sentinel', threshold: 15 }, { name: 'Pathfinder', threshold: 20 }]
         .filter(item => completedIds.size >= item.threshold).at(-1)?.name ?? 'Rookie';
@@ -413,7 +496,7 @@ app.get('/api/research/summary', requireRole('admin'), async (_req, res, next) =
       const topicAssessmentProgress = [...new Set(Object.values(latestByPhase).flatMap(assessment => assessment?.answers?.map(answer => answer.topic) ?? []))].map(topic => {
         const scores = Object.fromEntries(['pre', 'post', 'retention', 'transfer'].map(phase => {
           const answers = latestByPhase[phase]?.answers?.filter(answer => answer.topic === topic) ?? [];
-          return [phase, answers.length ? Math.round(answers.filter(answer => answer.correct).length / answers.length * 100) : null];
+          return [phase, answers.length ? Math.round(answers.filter(answer => answer.correct).length / answers.length * 1000) / 10 : null];
         }));
         return { topic, ...scores, preCorrect: scores.pre === null ? null : scores.pre === 100, postCorrect: scores.post === null ? null : scores.post === 100, improvementPoints: scores.pre === null || scores.post === null ? null : scores.post - scores.pre };
       });
@@ -455,10 +538,10 @@ app.get('/api/research/summary', requireRole('admin'), async (_req, res, next) =
         handle: participant.handle,
         consentedAt: participant.acceptedAt,
         assessments: {
-          pre: latestByPhase.pre ? { score: latestByPhase.pre.score, total: latestByPhase.pre.total, percent: Math.round(toPercent(latestByPhase.pre)), at: latestByPhase.pre.at } : null,
-          post: latestByPhase.post ? { score: latestByPhase.post.score, total: latestByPhase.post.total, percent: Math.round(toPercent(latestByPhase.post)), at: latestByPhase.post.at } : null,
-          retention: latestByPhase.retention ? { score: latestByPhase.retention.score, total: latestByPhase.retention.total, percent: Math.round(toPercent(latestByPhase.retention)), at: latestByPhase.retention.at } : null,
-          transfer: latestByPhase.transfer ? { score: latestByPhase.transfer.score, total: latestByPhase.transfer.total, percent: Math.round(toPercent(latestByPhase.transfer)), at: latestByPhase.transfer.at } : null,
+          pre: latestByPhase.pre ? { score: latestByPhase.pre.score, total: latestByPhase.pre.total, percent: Math.round(toPercent(latestByPhase.pre) * 10) / 10, at: latestByPhase.pre.at } : null,
+          post: latestByPhase.post ? { score: latestByPhase.post.score, total: latestByPhase.post.total, percent: Math.round(toPercent(latestByPhase.post) * 10) / 10, at: latestByPhase.post.at } : null,
+          retention: latestByPhase.retention ? { score: latestByPhase.retention.score, total: latestByPhase.retention.total, percent: Math.round(toPercent(latestByPhase.retention) * 10) / 10, at: latestByPhase.retention.at } : null,
+          transfer: latestByPhase.transfer ? { score: latestByPhase.transfer.score, total: latestByPhase.transfer.total, percent: Math.round(toPercent(latestByPhase.transfer) * 10) / 10, at: latestByPhase.transfer.at } : null,
           improvementPoints: latestByPhase.pre && latestByPhase.post ? Math.round((toPercent(latestByPhase.post) - toPercent(latestByPhase.pre)) * 10) / 10 : null,
           scoreGainPerHour,
           topicProgress: topicAssessmentProgress,
@@ -537,27 +620,77 @@ app.get('/api/research/summary', requireRole('admin'), async (_req, res, next) =
         strategyStats.set(event.rule, stats);
       }
     }
-    const topicGains = [...new Set(learnerAnalytics.flatMap(learner => learner.assessments.topicProgress.map(item => item.topic)))].map(topic => {
+    const topicGains = assessmentTopics.map(topic => {
       const scoreAt = phase => learnerAnalytics.map(learner => learner.assessments.topicProgress.find(item => item.topic === topic)?.[phase]).filter(Number.isFinite);
       const pre = scoreAt('pre'); const post = scoreAt('post'); const retention = scoreAt('retention'); const transfer = scoreAt('transfer');
+      const paired = learnerAnalytics.map(learner => learner.assessments.topicProgress.find(item => item.topic === topic)).filter(item => Number.isFinite(item?.pre) && Number.isFinite(item?.post));
       return {
-        topic, matchedLearners: Math.min(pre.length, post.length), meanPrePercent: mean(pre), meanPostPercent: mean(post), meanRetentionPercent: mean(retention), meanTransferPercent: mean(transfer),
-        meanImprovementPoints: pre.length && post.length ? mean(learnerAnalytics.map(learner => { const item = learner.assessments.topicProgress.find(entry => entry.topic === topic); return item?.improvementPoints; }).filter(Number.isFinite)) : null,
+        topic, matchedLearners: paired.length, meanPrePercent: mean(pre), meanPostPercent: mean(post), meanRetentionPercent: mean(retention), meanTransferPercent: mean(transfer),
+        meanImprovementPoints: mean(paired.map(item => item.post - item.pre)),
       };
     });
+    const classroomByCode = new Map(classroomRecords.map(record => {
+      const phases = Object.fromEntries((record.phases ?? []).map(item => [item.phase, item]));
+      if (phases.post) {
+        for (const followupPhase of ['retention', 'transfer']) {
+          if (phases[followupPhase] && new Date(phases[followupPhase].completedAt) < new Date(phases.post.completedAt)) delete phases[followupPhase];
+        }
+      }
+      return [record.code, phases];
+    }));
+    const classroomPhaseScore = (record, phase) => {
+      const item = record[phase];
+      if (!item?.scores?.length) return null;
+      const correct = item.scores.reduce((sum, score) => sum + score.correct, 0);
+      const total = item.scores.reduce((sum, score) => sum + score.total, 0);
+      return total ? correct / total * 100 : null;
+    };
+    const classroomTopicScores = assessmentTopics.map(topic => {
+      const phaseMeans = Object.fromEntries(['pre', 'post', 'retention', 'transfer'].map(phase => {
+        const values = classroomRecords.flatMap(record => {
+          const score = classroomByCode.get(record.code)?.[phase]?.scores?.find(item => item.topic === topic);
+          return score ? [score.correct / score.total * 100] : [];
+        });
+        return [phase, mean(values)];
+      }));
+      const scoreForCode = (code, phase) => classroomByCode.get(code)?.[phase]?.scores?.find(item => item.topic === topic);
+      const matchedPrePost = classroomRecords.filter(record => scoreForCode(record.code, 'pre') && scoreForCode(record.code, 'post')).length;
+      const matchedPostRetention = classroomRecords.filter(record => scoreForCode(record.code, 'post') && scoreForCode(record.code, 'retention')).length;
+      return { topic, ...phaseMeans, matchedPrePost, matchedPostRetention };
+    });
+    const classroomPrePostPairs = [...classroomByCode.values()].map(record => ({ pre: classroomPhaseScore(record, 'pre'), post: classroomPhaseScore(record, 'post') })).filter(pair => pair.pre !== null && pair.post !== null);
+    const classroomRetentionPairs = [...classroomByCode.values()].map(record => ({ pre: classroomPhaseScore(record, 'pre'), post: classroomPhaseScore(record, 'post'), retention: classroomPhaseScore(record, 'retention') })).filter(pair => pair.post !== null && pair.retention !== null);
+    const appRetentionPairs = learnerAnalytics.map(learner => ({ pre: learner.assessments.pre?.percent, post: learner.assessments.post?.percent, retention: learner.assessments.retention?.percent })).filter(pair => Number.isFinite(pair.post) && Number.isFinite(pair.retention));
+    const classroomRetainedGainPairs = classroomRetentionPairs.filter(pair => pair.pre !== null && pair.post > pair.pre).map(pair => (pair.retention - pair.pre) / (pair.post - pair.pre) * 100);
+    const appRetainedGainPairs = appRetentionPairs.filter(pair => Number.isFinite(pair.pre) && pair.post > pair.pre).map(pair => (pair.retention - pair.pre) / (pair.post - pair.pre) * 100);
     return res.json({
       consentedParticipantCount: participants.length,
+      retentionDelayDays,
       learnersWithPre: pairs.filter(pair => pair.pre).length,
       learnersWithPost: pairs.filter(pair => pair.post).length,
       matchedPairs: matched.length,
       meanPrePercent: mean(pairs.filter(pair => pair.pre).map(pair => toPercent(pair.pre))),
       meanPostPercent: mean(pairs.filter(pair => pair.post).map(pair => toPercent(pair.post))),
       meanChangePoints: mean(matched.map(pair => toPercent(pair.post) - toPercent(pair.pre))),
-      learnersWithRetention: learners.filter(learner => learner.assessments.some(item => item.phase === 'retention')).length,
+      learnersWithRetention: learnerAnalytics.filter(learner => learner.assessments.retention).length,
       meanRetentionPercent: mean(learnerAnalytics.map(learner => learner.assessments.retention?.percent).filter(Number.isFinite)),
-      learnersWithTransfer: learners.filter(learner => learner.assessments.some(item => item.phase === 'transfer')).length,
+      meanPostToRetentionChangePoints: mean(appRetentionPairs.map(pair => pair.retention - pair.post)),
+      meanRetainedLearningGainPercent: mean(appRetainedGainPairs),
+      learnersWithTransfer: learnerAnalytics.filter(learner => learner.assessments.transfer).length,
       meanTransferPercent: mean(learnerAnalytics.map(learner => learner.assessments.transfer?.percent).filter(Number.isFinite)),
       meanScoreGainPerHour: mean(learnerAnalytics.map(learner => learner.assessments.scoreGainPerHour).filter(Number.isFinite)),
+      classroomComparison: {
+        participantCount: classroomRecords.length,
+        retentionDelayDays,
+        phaseMeans: Object.fromEntries(['pre', 'post', 'retention', 'transfer'].map(phase => [phase, mean([...classroomByCode.values()].map(record => classroomPhaseScore(record, phase)).filter(Number.isFinite))])),
+        phaseCounts: Object.fromEntries(['pre', 'post', 'retention', 'transfer'].map(phase => [phase, [...classroomByCode.values()].filter(record => classroomPhaseScore(record, phase) !== null).length])),
+        matchedPrePost: classroomPrePostPairs.length,
+        meanChangePoints: mean(classroomPrePostPairs.map(pair => pair.post - pair.pre)),
+        matchedPostRetention: classroomRetentionPairs.length,
+        meanPostToRetentionChangePoints: mean(classroomRetentionPairs.map(pair => pair.retention - pair.post)),
+        meanRetainedLearningGainPercent: mean(classroomRetainedGainPairs),
+        topicScores: classroomTopicScores,
+      },
       meanModulesCompleted: mean(learnerAnalytics.map(learner => learner.moduleCompletion.completed)),
       meanModuleCompletionRate: mean(learnerAnalytics.map(learner => learner.moduleCompletion.rate)),
       meanChallengeCompletionRate: mean(learnerAnalytics.map(learner => learner.challengeCompletion.rate)),
@@ -608,7 +741,7 @@ app.post('/api/attempts', requireAuth, requireStudyConsent, async (req, res, nex
     if (hintsUsed > (challenge.hints?.length ?? 0)) return res.status(400).json({ error: 'hintsUsed is out of range.' });
 
     const current = await getProgress(req.account.accountId);
-    const gateError = await learnerChallengeGateError(current);
+    const gateError = await learnerChallengeGateError(current, req.account);
     if (gateError) return res.status(409).json({ error: gateError });
     const owningPath = learningPaths.find(path => path.modules.some(module => module.challengeIds.includes(challengeId)));
     const completedPathIds = new Set(completedLearningPaths(current.completed));
@@ -652,7 +785,7 @@ app.post('/api/practice/answer', requireAuth, async (req, res, next) => {
     if (!challenge.options.includes(selectedAnswer)) return res.status(400).json({ error: 'The selected answer is not valid for this challenge.' });
     if (hintsUsed > (challenge.hints?.length ?? 0)) return res.status(400).json({ error: 'hintsUsed is out of range.' });
     const current = await getProgress(req.account.accountId);
-    const gateError = await learnerChallengeGateError(current);
+    const gateError = await learnerChallengeGateError(current, req.account);
     if (gateError) return res.status(409).json({ error: gateError });
     const owningPath = learningPaths.find(path => path.modules.some(module => module.challengeIds.includes(challengeId)));
     const completedPathIds = new Set(completedLearningPaths(current.completed));
@@ -689,7 +822,7 @@ app.post('/api/challenges/:challengeId/remediation-answer', requireAuth, async (
     if (!remediation.options.includes(selectedAnswer)) return res.status(400).json({ error: 'The selected follow-up answer is not valid.' });
 
     const current = await getProgress(req.account.accountId);
-    const gateError = await learnerChallengeGateError(current);
+    const gateError = await learnerChallengeGateError(current, req.account);
     if (gateError) return res.status(409).json({ error: gateError });
     if (current.completed.includes(challengeId)) return res.status(409).json({ error: 'This scenario has already been completed.' });
     if (!(current.attempts ?? []).some(attempt => attempt.challengeId === challengeId && !attempt.correct)) return res.status(409).json({ error: 'Answer the scenario question incorrectly before its learning follow-up.' });
