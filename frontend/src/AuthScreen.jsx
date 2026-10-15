@@ -9,6 +9,7 @@ export default function AuthScreen({ onAuthenticated }) {
   const [setupKey, setSetupKey] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const isCreate = mode === 'learner-create';
 
   function changeMode(nextMode) {
     setMode(nextMode);
@@ -26,7 +27,6 @@ export default function AuthScreen({ onAuthenticated }) {
     event.preventDefault();
     setError('');
     const isSetup = mode === 'admin-setup';
-    const isCreate = mode === 'learner-create';
     if ((isSetup || isCreate) && password !== passwordConfirm) {
       setError('The passwords do not match.');
       return;

@@ -1,9 +1,11 @@
 import { randomBytes, scrypt as nodeScrypt, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
 import { User } from '../models/User.js';
+import { loadLocalMap, saveLocalMap } from './localPersistence.js';
 
 const scrypt = promisify(nodeScrypt);
 const temporaryUsers = new Map();
+const ensureTemporaryUsers = () => loadLocalMap('users.json', temporaryUsers);
 
 export function validatePassword(password) {
   return typeof password === 'string' && password.length >= 12 && password.length <= 128 && password.trim().length > 0;
@@ -14,6 +16,7 @@ export function validateAdminUsername(username) {
 }
 
 export async function createUser(password, role = 'learner', username = null) {
+  if (User.db.readyState !== 1) await ensureTemporaryUsers();
   if (!validatePassword(password)) throw new Error('Use a password between 12 and 128 characters.');
   if (role === 'admin' && !validateAdminUsername(username)) throw new Error('Admin username must be 3–32 letters, numbers, dots, underscores, or hyphens.');
   const normalizedUsername = role === 'admin' ? username.trim().toLowerCase() : null;
@@ -36,6 +39,7 @@ export async function createUser(password, role = 'learner', username = null) {
       if (role === 'admin' && [...temporaryUsers.values()].some(item => item.username === normalizedUsername)) throw new Error('An account already uses that admin username.');
       const user = { id: randomBytes(16).toString('hex'), handle, username: normalizedUsername, passwordSalt: salt, passwordHash: hash, credentialsConfigured: role === 'learner', role, researchConsent: { version: null, acceptedAt: null } };
       temporaryUsers.set(handle, user);
+      await saveLocalMap('users.json', temporaryUsers);
       return { id: user.id, handle, username: user.username, role, credentialsConfigured: user.credentialsConfigured };
     } catch (error) {
       if (error?.code === 11000 && error?.keyPattern?.username) throw new Error('An account already uses that admin username.');
@@ -48,6 +52,7 @@ export async function createUser(password, role = 'learner', username = null) {
 
 export async function authenticateUser(handle, password) {
   if (typeof handle !== 'string' || typeof password !== 'string') return null;
+  if (User.db.readyState !== 1) await ensureTemporaryUsers();
   const user = User.db.readyState === 1
     ? await User.findOne({ handle }).lean()
     : temporaryUsers.get(handle);
@@ -63,6 +68,7 @@ export async function authenticateUser(handle, password) {
 
 export async function authenticateAdmin(username, password) {
   if (!validateAdminUsername(username) || typeof password !== 'string') return null;
+  if (User.db.readyState !== 1) await ensureTemporaryUsers();
   const normalizedUsername = username.trim().toLowerCase();
   let user = User.db.readyState === 1
     ? await User.findOne({ role: 'admin', $or: [{ username: normalizedUsername }, { handle: username.trim() }] }).lean()
@@ -90,7 +96,10 @@ export async function authenticateAdmin(username, password) {
       : [...temporaryUsers.values()].some(item => item.username === normalizedUsername);
     if (duplicate) return null;
     if (User.db.readyState === 1) user = await User.findByIdAndUpdate(user._id, { $set: { username: normalizedUsername } }, { new: true }).lean();
-    else user.username = normalizedUsername;
+    else {
+      user.username = normalizedUsername;
+      await saveLocalMap('users.json', temporaryUsers);
+    }
   }
   return { id: user._id?.toString() ?? user.id, handle: user.handle, username: user.username ?? user.handle, role: user.role, researchConsent: user.researchConsent };
 }
@@ -103,14 +112,17 @@ export async function setLearnerPassword(accountId, password) {
     const user = await User.findOneAndUpdate({ _id: accountId, role: 'learner' }, { $set: { passwordSalt: salt, passwordHash: hash, credentialsConfigured: true } }, { new: true }).lean();
     return Boolean(user);
   }
+  await ensureTemporaryUsers();
   const user = [...temporaryUsers.values()].find(item => item.id === accountId && item.role === 'learner');
   if (!user) return false;
   Object.assign(user, { passwordSalt: salt, passwordHash: hash, credentialsConfigured: true });
+  await saveLocalMap('users.json', temporaryUsers);
   return true;
 }
 
 export async function hasAdminAccount() {
   if (User.db.readyState === 1) return (await User.exists({ role: 'admin' })) !== null;
+  await ensureTemporaryUsers();
   return [...temporaryUsers.values()].some(user => user.role === 'admin');
 }
 
@@ -119,6 +131,7 @@ export async function getUserById(accountId) {
     const user = await User.findById(accountId).lean();
     return user ? { id: user._id.toString(), handle: user.handle, username: user.username, role: user.role, credentialsConfigured: user.credentialsConfigured === true, researchConsent: user.researchConsent } : null;
   }
+  await ensureTemporaryUsers();
   const user = [...temporaryUsers.values()].find(item => item.id === accountId);
   return user ? { id: user.id, handle: user.handle, username: user.username, role: user.role, credentialsConfigured: user.credentialsConfigured === true, researchConsent: user.researchConsent } : null;
 }
@@ -129,9 +142,11 @@ export async function setResearchConsent(accountId, version) {
     const user = await User.findByIdAndUpdate(accountId, { $set: { 'researchConsent.version': version, 'researchConsent.acceptedAt': acceptedAt } }, { new: true }).lean();
     return user ? { version: user.researchConsent.version, acceptedAt: user.researchConsent.acceptedAt } : null;
   }
+  await ensureTemporaryUsers();
   const user = [...temporaryUsers.values()].find(item => item.id === accountId);
   if (!user) return null;
   user.researchConsent = { version, acceptedAt };
+  await saveLocalMap('users.json', temporaryUsers);
   return user.researchConsent;
 }
 
@@ -140,8 +155,12 @@ export async function clearResearchConsent(accountId) {
     await User.findByIdAndUpdate(accountId, { $set: { researchConsent: { version: null, acceptedAt: null } } });
     return;
   }
+  await ensureTemporaryUsers();
   const user = [...temporaryUsers.values()].find(item => item.id === accountId);
-  if (user) user.researchConsent = { version: null, acceptedAt: null };
+  if (user) {
+    user.researchConsent = { version: null, acceptedAt: null };
+    await saveLocalMap('users.json', temporaryUsers);
+  }
 }
 
 export async function listResearchConsentedParticipants() {
@@ -149,5 +168,6 @@ export async function listResearchConsentedParticipants() {
     const users = await User.find({ role: 'learner', 'researchConsent.acceptedAt': { $ne: null } }, { _id: 1, handle: 1, 'researchConsent.acceptedAt': 1 }).lean();
     return users.map(user => ({ id: user._id.toString(), handle: user.handle, acceptedAt: user.researchConsent.acceptedAt }));
   }
+  await ensureTemporaryUsers();
   return [...temporaryUsers.values()].filter(user => user.role === 'learner' && user.researchConsent?.acceptedAt).map(user => ({ id: user.id, handle: user.handle, acceptedAt: user.researchConsent.acceptedAt }));
 }

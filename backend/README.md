@@ -14,7 +14,7 @@ cp .env.example .env
 npm run dev
 ```
 
-The API listens on port 4000 by default. When MongoDB is available, progress is stored there. Otherwise, progress is held temporarily in memory and resets when the server restarts. Run the backend unit suite with `npm test`.
+The API listens on port 4000 by default. When MongoDB is available, accounts and progress are stored there. Without MongoDB, the backend stores accounts and progress in private JSON files under `backend/data/`, which is excluded from git. Back up this directory to retain local data; for production, configure MongoDB and use protected backups. Run the backend unit suite with `npm test`.
 
 ## Routes
 
@@ -63,4 +63,4 @@ Create a compressed MongoDB backup with `docker compose --env-file deploy.env --
 
 For the first admin, set a private `ADMIN_BOOTSTRAP_KEY` in `.env`, choose **Set up first admin** on the sign-in page, and submit that key with a username and password. This route is disabled after an admin exists. Remove the bootstrap key from `.env` after setup. Set a unique `SESSION_SECRET` (at least 32 characters) and use HTTPS in production.
 
-Without MongoDB, accounts, modules, and progress use in-memory development stores and reset when the server restarts; use MongoDB for durable server-side persistence. No account recovery is available because no contact details are collected. Configure and review production hosting, ethics approval, retention, and security before collecting research data.
+Without MongoDB, learner accounts and progress persist in `backend/data/`; the built-in modules and admin-edited modules still use the development in-memory store. Protect and back up the data directory because it contains pseudonymous learning records and password hashes. No account recovery is available because no contact details are collected. Configure and review production hosting, ethics approval, retention, and security before collecting research data.

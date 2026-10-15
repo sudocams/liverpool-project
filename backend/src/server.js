@@ -22,7 +22,17 @@ const dataRetentionDays = Math.max(0, Number.parseInt(process.env.DATA_RETENTION
 
 function publicChallenge(challenge) {
   const { answerIndex, ...publicContent } = challenge;
-  return publicContent;
+  return { ...publicContent, options: orderedChallengeOptions(challenge) };
+}
+
+function orderedChallengeOptions(challenge) {
+  const options = challenge.options ?? [];
+  if (options.length < 2) return options;
+  const missionOrder = Number.isInteger(challenge.missionOrder) && challenge.missionOrder > 0
+    ? challenge.missionOrder
+    : [...challenge.id].reduce((hash, character) => ((hash * 31) + character.charCodeAt(0)) >>> 0, 0) + 1;
+  const offset = (missionOrder - 1) % options.length;
+  return options.map((_, index) => options[(index + offset) % options.length]);
 }
 
 function durationSeconds(value) {
@@ -34,7 +44,7 @@ app.use(express.json({ limit: '10kb' }));
 app.use(attachSession);
 
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', storage: mongoose.connection.readyState === 1 ? 'mongodb' : 'memory' });
+  res.json({ status: 'ok', storage: mongoose.connection.readyState === 1 ? 'mongodb' : 'local-file' });
 });
 
 app.post('/api/auth/register', async (req, res, next) => {
@@ -457,14 +467,15 @@ app.post('/api/attempts', requireAuth, requireStudyConsent, async (req, res, nex
     if (owningPath && owningPath.prerequisites.some(id => !completedPathIds.has(id))) return res.status(409).json({ error: 'Complete the prerequisite learning path before starting this challenge.' });
     const owningModuleIndex = owningPath?.modules.findIndex(module => module.challengeIds.includes(challengeId)) ?? -1;
     if (owningModuleIndex > 0 && owningPath.modules.slice(0, owningModuleIndex).some(module => !module.challengeIds.every(id => current.completed.includes(id)))) return res.status(409).json({ error: 'Complete the earlier modules in this learning path before starting this challenge.' });
-    const correct = selectedOption === challenge.answerIndex;
+    const displayedOptions = orderedChallengeOptions(challenge);
+    const correct = displayedOptions[selectedOption] === challenge.options[challenge.answerIndex];
     const firstClear = correct && !current.completed.includes(challengeId);
     const points = correct
       ? firstClear ? Math.max(40, 100 - hintsUsed * 20) : Math.max(10, 25 - hintsUsed * 5)
       : 5;
     const duration = durationSeconds(req.body?.durationSeconds);
     const modules = await listModules();
-    const feedback = await generateChallengeFeedback({ challenge, selectedOption, correct });
+    const feedback = await generateChallengeFeedback({ challenge: { ...challenge, options: displayedOptions }, selectedOption, correct });
     const attempt = { challengeId, topic: challenge.topic, correct, points, hintsUsed, durationSeconds: duration, feedbackSource: feedback.source, at: new Date().toISOString() };
     const previousCompletedCount = current.completed.length;
     let progress = {
@@ -496,7 +507,8 @@ app.post('/api/practice/answer', requireAuth, async (req, res, next) => {
     if (owningPath && owningPath.prerequisites.some(id => !completedPathIds.has(id))) return res.status(409).json({ error: 'Complete the prerequisite learning path before starting this challenge.' });
     const owningModuleIndex = owningPath?.modules.findIndex(module => module.challengeIds.includes(challengeId)) ?? -1;
     if (owningModuleIndex > 0 && owningPath.modules.slice(0, owningModuleIndex).some(module => !module.challengeIds.every(id => current.completed.includes(id)))) return res.status(409).json({ error: 'Complete the earlier modules in this learning path before starting this challenge.' });
-    const correct = selectedOption === challenge.answerIndex;
+    const displayedOptions = orderedChallengeOptions(challenge);
+    const correct = displayedOptions[selectedOption] === challenge.options[challenge.answerIndex];
     const firstClear = correct && !current.completed.includes(challengeId);
     const points = correct ? firstClear ? Math.max(40, 100 - hintsUsed * 20) : Math.max(10, 25 - hintsUsed * 5) : 5;
     const modules = await listModules();

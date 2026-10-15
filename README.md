@@ -26,4 +26,4 @@ npm install
 npm run dev
 ```
 
-Run the frontend in a second terminal using the steps above. The backend uses MongoDB when configured, or temporary in-memory progress for local development. Backend unit tests are available with `cd backend && npm test`. See `backend/README.md` for retention, backup, and Docker deployment instructions.
+Run the frontend in a second terminal using the steps above. The backend uses MongoDB when configured; without it, accounts and progress persist locally under `backend/data/` (ignored by git). Back up that folder for local deployments and use MongoDB with protected backups for production. Learners can sign in with their learner code and password after the 30-day browser session expires or browser data is cleared. Backend unit tests are available with `cd backend && npm test`. See `backend/README.md` for retention, backup, and Docker deployment instructions.

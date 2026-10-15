@@ -1,7 +1,9 @@
 import { LearnerProgress } from '../models/LearnerProgress.js';
 import { completedLearningPaths } from '../content/learningPaths.js';
+import { loadLocalMap, saveLocalMap } from './localPersistence.js';
 
 const temporaryProgress = new Map();
+const ensureTemporaryProgress = () => loadLocalMap('progress.json', temporaryProgress);
 
 export async function getProgress(learnerId) {
   if (LearnerProgress.db.readyState === 1) {
@@ -12,6 +14,7 @@ export async function getProgress(learnerId) {
       gamificationInitialized: document.gamificationInitialized ?? false, rankHistory: document.rankHistory ?? [], currentRank: document.currentRank ?? 'Rookie', researchFeedback: document.researchFeedback ?? null,
     } : emptyProgress();
   }
+  await ensureTemporaryProgress();
   return temporaryProgress.get(learnerId) ?? emptyProgress();
 }
 
@@ -36,9 +39,11 @@ export async function saveProgress(learnerId, progress) {
       gamificationInitialized: document.gamificationInitialized ?? false, rankHistory: document.rankHistory ?? [], currentRank: document.currentRank ?? 'Rookie', researchFeedback: document.researchFeedback ?? null,
     };
   }
+  await ensureTemporaryProgress();
   const latest = temporaryProgress.get(learnerId);
   const updated = latest ? { ...progress, activitySessions: latest.activitySessions ?? progress.activitySessions ?? [] } : progress;
   temporaryProgress.set(learnerId, updated);
+  await saveLocalMap('progress.json', temporaryProgress);
   return updated;
 }
 
@@ -48,9 +53,11 @@ export async function startActivitySession(learnerId, session) {
     await LearnerProgress.findOneAndUpdate({ learnerId }, { $setOnInsert: { learnerId }, $push: { activitySessions: session } }, { upsert: true, new: true, setDefaultsOnInsert: true });
     return;
   }
+  await ensureTemporaryProgress();
   const progress = await getProgress(learnerId);
   progress.activitySessions = [...(progress.activitySessions ?? []).map(item => item.endedAt ? item : { ...item, endedAt: session.startedAt }), session];
   temporaryProgress.set(learnerId, progress);
+  await saveLocalMap('progress.json', temporaryProgress);
 }
 
 export async function heartbeatActivitySession(learnerId, sessionId, now) {
@@ -67,6 +74,7 @@ export async function heartbeatActivitySession(learnerId, sessionId, now) {
     );
     return result.modifiedCount ? { status: 'ok', activeSeconds: (session.activeSeconds ?? 0) + seconds } : { status: 'stale' };
   }
+  await ensureTemporaryProgress();
   const progress = await getProgress(learnerId);
   const index = (progress.activitySessions ?? []).findIndex(item => item.sessionId === sessionId);
   if (index < 0) return { status: 'missing' };
@@ -76,6 +84,7 @@ export async function heartbeatActivitySession(learnerId, sessionId, now) {
   const updated = { ...session, lastHeartbeatAt: now, activeSeconds: (session.activeSeconds ?? 0) + seconds };
   progress.activitySessions = progress.activitySessions.map((item, itemIndex) => itemIndex === index ? updated : item);
   temporaryProgress.set(learnerId, progress);
+  await saveLocalMap('progress.json', temporaryProgress);
   return { status: 'ok', activeSeconds: updated.activeSeconds };
 }
 
@@ -90,6 +99,7 @@ export async function endActivitySession(learnerId, sessionId, now) {
     const exists = await LearnerProgress.exists({ learnerId, 'activitySessions.sessionId': sessionId });
     return exists ? 'ended' : 'missing';
   }
+  await ensureTemporaryProgress();
   const progress = await getProgress(learnerId);
   let found = false;
   progress.activitySessions = (progress.activitySessions ?? []).map(session => {
@@ -99,6 +109,7 @@ export async function endActivitySession(learnerId, sessionId, now) {
   });
   if (!found) return 'missing';
   temporaryProgress.set(learnerId, progress);
+  await saveLocalMap('progress.json', temporaryProgress);
   return 'ok';
 }
 
@@ -136,7 +147,9 @@ export async function pruneExpiredProgress(cutoff) {
     if (operations.length) await LearnerProgress.bulkWrite(operations);
     return records.length;
   }
+  await ensureTemporaryProgress();
   for (const [id, progress] of temporaryProgress) temporaryProgress.set(id, prune(progress));
+  await saveLocalMap('progress.json', temporaryProgress);
   return temporaryProgress.size;
 }
 
@@ -144,6 +157,7 @@ export async function listProgress() {
   if (LearnerProgress.db.readyState === 1) {
     return LearnerProgress.find({}, { learnerId: 0 }).lean();
   }
+  await ensureTemporaryProgress();
   return [...temporaryProgress.values()];
 }
 
@@ -152,6 +166,7 @@ export async function listProgressForAccounts(accountIds) {
   if (LearnerProgress.db.readyState === 1) {
     return LearnerProgress.find({ learnerId: { $in: accountIds } }).lean();
   }
+  await ensureTemporaryProgress();
   const allowed = new Set(accountIds);
   return [...temporaryProgress.entries()].filter(([id]) => allowed.has(id)).map(([id, progress]) => ({ ...progress, learnerId: id }));
 }
@@ -161,5 +176,7 @@ export async function deleteProgress(learnerId) {
     await LearnerProgress.deleteOne({ learnerId });
     return;
   }
+  await ensureTemporaryProgress();
   temporaryProgress.delete(learnerId);
+  await saveLocalMap('progress.json', temporaryProgress);
 }
